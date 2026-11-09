@@ -1,0 +1,1985 @@
+(() => {
+'use strict';
+
+/* =========================================================
+   Birthday Time Capsule
+   Single-file, local-first. Videos are kept in IndexedDB for
+   playback; originals are handed to the iPhone share sheet
+   (Save to Files / Save Videos) because web apps cannot write
+   to iCloud directly.
+   ========================================================= */
+
+const APP_ID = 'birthday-time-capsule';
+const APP_VERSION = '1.0';
+const DB_NAME = 'birthday-time-capsule';
+
+/* ---------- small helpers */
+const $ = (s, r = document) => r.querySelector(s);
+const $$ = (s, r = document) => [...r.querySelectorAll(s)];
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const wait = ms => new Promise(r => setTimeout(r, ms));
+const ALPH = 'abcdefghijkmnpqrstuvwxyz23456789';
+const uid = (n = 8) => { const r = crypto.getRandomValues(new Uint8Array(n)); let s = ''; for (const x of r) s += ALPH[x % ALPH.length]; return s; };
+const pad = n => String(n).padStart(2, '0');
+const isoOf = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+const todayISO = () => isoOf(new Date());
+const parseISO = s => { const [y, m, d] = String(s).split('-').map(Number); return new Date(y, (m || 1) - 1, d || 1); };
+const fmtDate = (s, o = { month: 'long', day: 'numeric', year: 'numeric' }) => parseISO(s).toLocaleDateString(undefined, o);
+const fmtMonthYear = s => parseISO(s).toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
+const ordinal = n => { const s = ['th', 'st', 'nd', 'rd'], v = n % 100; return n + (s[(v - 20) % 10] || s[v] || s[0]); };
+const plural = (n, one, many) => `${n} ${n === 1 ? one : (many || one + 's')}`;
+const fmtDur = s => { s = Math.max(0, Math.round(s || 0)); return `${Math.floor(s / 60)}:${pad(s % 60)}`; };
+const fmtBytes = b => { if (!b) return '0 MB'; const u = ['bytes', 'KB', 'MB', 'GB', 'TB']; let i = 0; while (b >= 1024 && i < u.length - 1) { b /= 1024; i++; } return `${b < 10 && i > 1 ? b.toFixed(1) : Math.round(b)} ${u[i]}`; };
+const heightStr = inches => { if (!inches) return ''; const ft = Math.floor(inches / 12); const inch = Math.round((inches - ft * 12) * 2) / 2; return `${ft}′ ${String(inch).replace('.5', '½')}″`; };
+function ageOn(birth, on) {
+  const b = parseISO(birth), o = parseISO(on);
+  let a = o.getFullYear() - b.getFullYear();
+  if (o.getMonth() < b.getMonth() || (o.getMonth() === b.getMonth() && o.getDate() < b.getDate())) a--;
+  return Math.max(0, a);
+}
+function birthdayInfo(birth) {
+  const b = parseISO(birth), t = parseISO(todayISO());
+  let next = new Date(t.getFullYear(), b.getMonth(), b.getDate());
+  if (next < t) next = new Date(t.getFullYear() + 1, b.getMonth(), b.getDate());
+  let last = new Date(t.getFullYear(), b.getMonth(), b.getDate());
+  if (last > t) last = new Date(t.getFullYear() - 1, b.getMonth(), b.getDate());
+  return {
+    daysUntil: Math.round((next - t) / 864e5),
+    daysSince: Math.round((t - last) / 864e5),
+    turning: next.getFullYear() - b.getFullYear(),
+  };
+}
+const IOS = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+const STANDALONE = window.navigator.standalone === true || window.matchMedia('(display-mode: standalone)').matches;
+
+/* ---------- icons (stroke = currentColor) */
+const sv = (p, vb = '0 0 24 24') => `<svg viewBox="${vb}" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${p}</svg>`;
+const I = {
+  back: sv('<path d="M15 5l-7 7 7 7"/>'),
+  chev: sv('<path d="M9 5l7 7-7 7"/>'),
+  gear: sv('<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/>'),
+  play: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4.5v15a1 1 0 0 0 1.5.86l12.5-7.5a1 1 0 0 0 0-1.72L8.5 3.64A1 1 0 0 0 7 4.5z" fill="currentColor"/></svg>',
+  pause: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="4" width="4.5" height="16" rx="1.2" fill="currentColor"/><rect x="13.5" y="4" width="4.5" height="16" rx="1.2" fill="currentColor"/></svg>',
+  plus: sv('<path d="M12 5v14M5 12h14"/>'),
+  more: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.8" fill="currentColor"/><circle cx="12" cy="12" r="1.8" fill="currentColor"/><circle cx="19" cy="12" r="1.8" fill="currentColor"/></svg>',
+  close: sv('<path d="M6 6l12 12M18 6L6 18"/>'),
+  flip: sv('<path d="M4 8h3l2-3h6l2 3h3v11H4z"/><path d="M9.5 12.5a3 3 0 0 1 5-1.5M14.5 14.5a3 3 0 0 1-5 1.5"/><path d="M14.7 9.6v1.6h-1.6M9.3 17.4v-1.6h1.6"/>'),
+  check: sv('<path d="M5 12.5l4.5 4.5L19 7.5"/>'),
+  cloud: sv('<path d="M7 18.5h10.5a4 4 0 0 0 .6-7.96A6 6 0 0 0 6.5 9.5 4.5 4.5 0 0 0 7 18.5z"/>'),
+  photos: sv('<circle cx="12" cy="7.5" r="3"/><circle cx="12" cy="16.5" r="3"/><circle cx="7.5" cy="12" r="3"/><circle cx="16.5" cy="12" r="3"/>'),
+  film: sv('<rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M7 4v16M17 4v16M3 9h4M3 15h4M17 9h4M17 15h4"/>'),
+  camera: sv('<path d="M3 7.5h3.5L8.5 5h7l2 2.5H21V19H3z"/><circle cx="12" cy="13" r="3.5"/>'),
+  video: sv('<rect x="3" y="6" width="13" height="12" rx="2.5"/><path d="M16 10.5l5-3v9l-5-3"/>'),
+  skip: sv('<path d="M5 5l9 7-9 7z"/><path d="M18 5v14"/>'),
+  upload: sv('<path d="M12 15V4M7.5 8.5L12 4l4.5 4.5"/><path d="M5 14v4.5A1.5 1.5 0 0 0 6.5 20h11a1.5 1.5 0 0 0 1.5-1.5V14"/>'),
+  trash: sv('<path d="M4 7h16M9 7V5h6v2M6.5 7l1 12.5h9l1-12.5"/>'),
+  pencil: sv('<path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M13.5 6.5l4 4"/>'),
+  up: sv('<path d="M6 14l6-6 6 6"/>'),
+  down: sv('<path d="M6 10l6 6 6-6"/>'),
+  link: sv('<path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/>'),
+  phone: sv('<rect x="6.5" y="2.5" width="11" height="19" rx="2.5"/><path d="M10.5 18.5h3"/>'),
+  info: sv('<circle cx="12" cy="12" r="9"/><path d="M12 11v5.5M12 7.6v.2"/>'),
+  share: sv('<path d="M12 15V3.5M7.5 8L12 3.5 16.5 8"/><path d="M6 11H5v9.5h14V11h-1"/>'),
+  doc: sv('<path d="M6 3h8l4 4v14H6z"/><path d="M14 3v4h4"/>'),
+  missing: sv('<path d="M3 3l18 18"/><path d="M8.5 6H14a2 2 0 0 1 2 2v3l5-3v9M16 16v.5A2.5 2.5 0 0 1 13.5 19H5.5A2.5 2.5 0 0 1 3 16.5v-8A2.5 2.5 0 0 1 5 6"/>'),
+  people: sv('<circle cx="9" cy="8" r="3.2"/><path d="M3.5 19.5a5.5 5.5 0 0 1 11 0"/><circle cx="17" cy="9" r="2.6"/><path d="M15.5 14.2a4.6 4.6 0 0 1 6 4.3"/>'),
+  list: sv('<path d="M9 6h11M9 12h11M9 18h11"/><circle cx="4.5" cy="6" r="1"/><circle cx="4.5" cy="12" r="1"/><circle cx="4.5" cy="18" r="1"/>'),
+  ruler: sv('<rect x="8" y="2.5" width="8" height="19" rx="1.5"/><path d="M8 6.5h3M8 10h4M8 13.5h3M8 17h4"/>'),
+  image: sv('<rect x="3" y="4" width="18" height="16" rx="2.5"/><circle cx="9" cy="10" r="2"/><path d="M21 16l-5-5-9 9"/>'),
+  calendar: sv('<rect x="3.5" y="5" width="17" height="15.5" rx="2.5"/><path d="M3.5 10h17M8 3v4M16 3v4"/>'),
+  candle: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.5c1.8 2 2.6 3.4 2.6 4.7a2.6 2.6 0 0 1-5.2 0c0-1.3.8-2.7 2.6-4.7z" fill="#F2C35B"/><rect x="9.5" y="11" width="5" height="11" rx="1.2" fill="currentColor"/></svg>',
+};
+
+/* ---------- colors */
+const COLORS = [
+  { id: 'rose',    soft: '#E7B4AA', deep: '#A4564A', name: 'Rose' },
+  { id: 'sage',    soft: '#B2C5A6', deep: '#577150', name: 'Sage' },
+  { id: 'sky',     soft: '#ADC6DE', deep: '#4A6D90', name: 'Sky' },
+  { id: 'butter',  soft: '#EDD59A', deep: '#8A6B1F', name: 'Butter' },
+  { id: 'lilac',   soft: '#C9B9DF', deep: '#6C5690', name: 'Lilac' },
+  { id: 'apricot', soft: '#F0C2A0', deep: '#9C5D2D', name: 'Apricot' },
+];
+const colorOf = c => COLORS.find(x => x.id === (c && c.color)) || COLORS[0];
+const kidStyle = c => { const k = colorOf(c); return `--kid:${k.soft};--kid-deep:${k.deep}`; };
+
+/* ---------- default questions */
+const DEFAULT_QUESTIONS = [
+  ['q-intro',   "What's your name, and how old are you today?", 'Name and age', 'Can you show me on your fingers?'],
+  ['q-food',    "What's your favorite food?", 'Favorite food', "Is there a food you really don't like?"],
+  ['q-toy',     "What's your favorite toy or thing to play with?", 'Favorite toy', 'What do you like to do with it?'],
+  ['q-play',    'What do you love doing most?', 'Loves doing', 'Is that inside or outside?'],
+  ['q-friends', 'Who are your best friends?', 'Best friends', 'What do you like to do together?'],
+  ['q-grow',    'What do you want to be when you grow up?', 'When I grow up', 'What would you do all day?'],
+  ['q-mom',     "What's your favorite thing to do with Mom?", 'With Mom', 'Tell me about a time you did that.'],
+  ['q-dad',     "What's your favorite thing to do with Dad?", 'With Dad', 'Tell me about a time you did that.'],
+  ['q-funny',   "What's the funniest thing that ever happened to you?", 'Funniest thing', 'Can you act it out?'],
+  ['q-proud',   'What are you proud of?', 'Proud of', 'Something you learned to do this year.'],
+  ['q-excited', 'What are you excited about this year?', 'Excited about', 'Something you want to try for the first time?'],
+  ['q-future',  'What do you want to tell grown-up you?', 'To grown-up me', 'Grown-up you is going to watch this someday.'],
+  ['q-parent',  'A message from Mom and Dad', 'From Mom and Dad', 'Turn the camera around. Tell {name} what you love about this age.', 'parent'],
+  ['q-color',   "What's your favorite color?", 'Favorite color', 'Why that one?', 'child', false],
+  ['q-memory',  "What's your favorite memory from this year?", 'Favorite memory', 'Where were you? Who was there?', 'child', false],
+  ['q-happy',   'What makes you really happy?', 'Makes me happy', 'And what makes you grumpy?', 'child', false],
+  ['q-says',    "What's something Mom or Dad always says?", 'Mom and Dad always say', 'Can you say it like they do?', 'child', false],
+  ['q-song',    "What's your favorite song? Can you sing a little?", 'Favorite song', '', 'child', false],
+  ['q-super',   'If you could have any superpower, what would it be?', 'Superpower', 'What would you do with it first?', 'child', false],
+  ['q-job',     'What do you think Dad does at work?', "Dad's job", 'And what does Mom do?', 'child', false],
+];
+
+function freshState() {
+  return {
+    v: 1,
+    children: [],
+    questions: DEFAULT_QUESTIONS.map(([id, text, short, nudge, who = 'child', active = true]) =>
+      ({ id, text, short, nudge, who, active, archived: false, updatedAt: 0 })),
+    interviews: [],
+    settings: { created: Date.now(), lastChangeAt: 0, lastBackupAt: 0, seenStorage: false },
+  };
+}
+
+/* =========================================================
+   Storage (IndexedDB)
+   ========================================================= */
+const DB = (() => {
+  let db;
+  function open() {
+    return new Promise((res, rej) => {
+      if (!('indexedDB' in window)) return rej(new Error('This browser has no local database.'));
+      const r = indexedDB.open(DB_NAME, 1);
+      r.onupgradeneeded = () => { const d = r.result; for (const s of ['state', 'images', 'videos']) if (!d.objectStoreNames.contains(s)) d.createObjectStore(s); };
+      r.onsuccess = () => { db = r.result; db.onversionchange = () => db.close(); res(db); };
+      r.onerror = () => rej(r.error);
+      r.onblocked = () => rej(new Error('The app is open in another tab. Close it and try again.'));
+    });
+  }
+  function run(store, mode, fn) {
+    return new Promise((res, rej) => {
+      let t;
+      try { t = db.transaction(store, mode); } catch (e) { return rej(e); }
+      const s = t.objectStore(store);
+      let out;
+      const req = fn(s);
+      if (req) req.onsuccess = () => { out = req.result; };
+      t.oncomplete = () => res(out);
+      t.onerror = () => rej(t.error || new Error('Storage error'));
+      t.onabort = () => rej(t.error || new Error('Storage was interrupted'));
+    });
+  }
+  function entries(store) {
+    return new Promise((res, rej) => {
+      const out = [];
+      const t = db.transaction(store, 'readonly');
+      const c = t.objectStore(store).openCursor();
+      c.onsuccess = () => { const cur = c.result; if (cur) { out.push([cur.key, cur.value]); cur.continue(); } };
+      t.oncomplete = () => res(out);
+      t.onerror = () => rej(t.error);
+    });
+  }
+  return {
+    open,
+    get: (st, k) => run(st, 'readonly', s => s.get(k)),
+    put: (st, k, v) => run(st, 'readwrite', s => s.put(v, k)),
+    del: (st, k) => run(st, 'readwrite', s => s.delete(k)),
+    keys: st => run(st, 'readonly', s => s.getAllKeys()),
+    entries,
+  };
+})();
+
+let S = freshState();
+const IMG = new Map();      // image id -> data URL
+const HAVE = new Set();     // clip ids with a video stored on this device
+
+async function loadAll() {
+  await DB.open();
+  const st = await DB.get('state', 'main');
+  if (st && st.v) {
+    S = st;
+    // add any new default questions introduced later (never removes yours)
+    for (const [id, text, short, nudge, who = 'child'] of DEFAULT_QUESTIONS)
+      if (!S.questions.find(q => q.id === id)) S.questions.push({ id, text, short, nudge, who, active: false, archived: false, updatedAt: 0 });
+    S.settings = Object.assign(freshState().settings, S.settings || {});
+  }
+  for (const [k, v] of await DB.entries('images')) IMG.set(k, v);
+  for (const k of await DB.keys('videos')) HAVE.add(k);
+}
+
+async function commit() {
+  S.settings.lastChangeAt = Date.now();
+  await DB.put('state', 'main', S);
+}
+
+async function putImage(id, dataURL) { await DB.put('images', id, dataURL); IMG.set(id, dataURL); }
+async function delImage(id) { if (!id) return; IMG.delete(id); try { await DB.del('images', id); } catch {} }
+
+function recBlob(rec) {
+  if (!rec) return null;
+  if (rec.blob instanceof Blob) return rec.blob;
+  if (rec.buf) return new Blob([rec.buf], { type: rec.type || 'video/mp4' });
+  return null;
+}
+async function putVideo(id, blob) {
+  const type = blob.type || 'video/mp4';
+  try {
+    await DB.put('videos', id, { blob, type, size: blob.size, at: Date.now() });
+  } catch (e) {
+    if (e && e.name === 'QuotaExceededError') throw quotaError();
+    // Some WebKit versions refuse certain Blobs; store the bytes instead.
+    const buf = await blob.arrayBuffer();
+    try { await DB.put('videos', id, { buf, type, size: blob.size, at: Date.now() }); }
+    catch (e2) { if (e2 && e2.name === 'QuotaExceededError') throw quotaError(); throw e2; }
+  }
+  // read back to confirm it is really there
+  const check = recBlob(await DB.get('videos', id));
+  if (!check || check.size !== blob.size) throw new Error('The video could not be confirmed in storage. Please try again.');
+  HAVE.add(id);
+}
+function quotaError() { const e = new Error('This iPhone is out of room for new videos. Free up space in Settings › General › iPhone Storage, then try again.'); e.name = 'Quota'; return e; }
+async function getVideo(id) { return recBlob(await DB.get('videos', id)); }
+async function delVideo(id) { HAVE.delete(id); try { await DB.del('videos', id); } catch {} }
+
+async function ensurePersist() {
+  try { if (navigator.storage && navigator.storage.persisted && !(await navigator.storage.persisted())) await navigator.storage.persist(); } catch {}
+}
+
+/* =========================================================
+   Lookups
+   ========================================================= */
+const child = id => S.children.find(c => c.id === id);
+const interview = id => S.interviews.find(i => i.id === id);
+const question = id => S.questions.find(q => q.id === id);
+const kidInterviews = cid => S.interviews.filter(i => i.childId === cid).sort((a, b) => b.date.localeCompare(a.date));
+const allClips = () => S.interviews.flatMap(iv => iv.answers.map((a, idx) => ({ iv, a, idx })).filter(x => x.a.clip));
+const ivTitle = iv => { const c = child(iv.childId); return `${c ? c.name : ''} at ${iv.age}`; };
+const answeredCount = iv => iv.answers.filter(a => a.clip).length;
+const nudgeFor = (qid, c) => { const q = question(qid); return q && q.nudge ? q.nudge.replace(/\{name\}/g, c ? c.name : 'them') : ''; };
+const shortFor = a => { const q = question(a.qid); return (q && q.short) || a.text; };
+const currentAge = c => ageOn(c.birthday, todayISO());
+function coverOf(iv) {
+  if (iv.cover && IMG.has(iv.cover)) return IMG.get(iv.cover);
+  const a = iv.answers.find(x => x.clip && x.clip.thumb && IMG.has(x.clip.thumb) && x.qid !== 'q-parent');
+  const b = a || iv.answers.find(x => x.clip && x.clip.thumb && IMG.has(x.clip.thumb));
+  return b ? IMG.get(b.clip.thumb) : null;
+}
+const photoOf = c => (c && c.photo && IMG.has(c.photo)) ? IMG.get(c.photo) : null;
+const avatarHTML = (c, cls = 'initial') => { const p = photoOf(c); return p ? `<img src="${p}" alt="">` : `<div class="${cls}">${esc((c.name || '?').trim().charAt(0).toUpperCase())}</div>`; };
+const unsavedFiles = () => allClips().filter(x => HAVE.has(x.a.clip.id) && !x.a.clip.savedFiles);
+const missingClips = () => allClips().filter(x => !HAVE.has(x.a.clip.id));
+
+/* =========================================================
+   Media helpers
+   ========================================================= */
+function pickMime() {
+  if (!window.MediaRecorder || !MediaRecorder.isTypeSupported) return '';
+  const c = ['video/mp4;codecs=avc1.640028,mp4a.40.2', 'video/mp4;codecs=avc1,mp4a', 'video/mp4', 'video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm'];
+  for (const m of c) { try { if (MediaRecorder.isTypeSupported(m)) return m; } catch {} }
+  return '';
+}
+function baseType(t, name = '') {
+  t = String(t || '').split(';')[0].trim();
+  if (t) return t;
+  if (/\.mov$/i.test(name)) return 'video/quicktime';
+  if (/\.webm$/i.test(name)) return 'video/webm';
+  return 'video/mp4';
+}
+const extFor = t => /quicktime/.test(t) ? 'mov' : /webm/.test(t) ? 'webm' : /3gpp/.test(t) ? '3gp' : 'mp4';
+
+function frameFrom(video, max = 360) {
+  try {
+    const w = video.videoWidth, h = video.videoHeight;
+    if (!w || !h) return null;
+    const sc = Math.min(1, max / Math.max(w, h));
+    const cv = document.createElement('canvas');
+    cv.width = Math.round(w * sc); cv.height = Math.round(h * sc);
+    cv.getContext('2d').drawImage(video, 0, 0, cv.width, cv.height);
+    return cv.toDataURL('image/jpeg', 0.78);
+  } catch { return null; }
+}
+function thumbFromBlob(blob) {
+  return new Promise(res => {
+    const v = document.createElement('video');
+    v.muted = true; v.playsInline = true; v.preload = 'auto';
+    v.setAttribute('playsinline', ''); v.setAttribute('muted', '');
+    v.style.cssText = 'position:fixed;left:-9999px;top:0;width:2px;height:2px;opacity:0';
+    const url = URL.createObjectURL(blob);
+    let done = false;
+    const finish = thumb => {
+      if (done) return; done = true;
+      const duration = isFinite(v.duration) ? v.duration : 0;
+      try { v.pause(); } catch {}
+      v.remove(); URL.revokeObjectURL(url);
+      res({ thumb, duration });
+    };
+    v.addEventListener('loadedmetadata', () => {
+      const d = isFinite(v.duration) ? v.duration : 2;
+      try { v.currentTime = Math.min(1, Math.max(0.1, d / 3)); } catch { }
+    });
+    v.addEventListener('seeked', () => setTimeout(() => finish(frameFrom(v)), 60));
+    v.addEventListener('error', () => finish(null));
+    setTimeout(() => finish(frameFrom(v)), 9000);
+    document.body.appendChild(v);
+    v.src = url;
+    v.load();
+    const p = v.play(); if (p && p.then) p.then(() => v.pause()).catch(() => {});
+  });
+}
+async function imageToDataURL(file, maxW = 720, ratio = 3 / 4) {
+  const url = URL.createObjectURL(file);
+  try {
+    const img = new Image();
+    img.src = url;
+    await img.decode();
+    let sw = img.naturalWidth, sh = img.naturalHeight, sx = 0, sy = 0;
+    if (ratio) {
+      if (sw / sh > ratio) { const nw = sh * ratio; sx = (sw - nw) / 2; sw = nw; }
+      else { const nh = sw / ratio; sy = (sh - nh) / 2.6; sh = nh; }
+    }
+    const w = Math.min(maxW, sw), h = Math.round(w * sh / sw);
+    const cv = document.createElement('canvas'); cv.width = w; cv.height = h;
+    cv.getContext('2d').drawImage(img, sx, sy, sw, sh, 0, 0, w, h);
+    return cv.toDataURL('image/jpeg', 0.84);
+  } finally { URL.revokeObjectURL(url); }
+}
+
+function pickFiles({ accept = '*/*', capture = null, multiple = false } = {}) {
+  // must be called synchronously inside a tap
+  return new Promise(res => {
+    const inp = document.createElement('input');
+    inp.type = 'file'; inp.accept = accept; inp.multiple = multiple;
+    if (capture) inp.setAttribute('capture', capture);
+    inp.style.cssText = 'position:fixed;left:-9999px;opacity:0';
+    document.body.appendChild(inp);
+    inp.addEventListener('change', () => { const f = [...(inp.files || [])]; inp.remove(); res(f); }, { once: true });
+    inp.addEventListener('cancel', () => { inp.remove(); res([]); }, { once: true });
+    inp.click();
+  });
+}
+
+/* ---------- sharing (the bridge to iCloud Drive / Photos) */
+function canShareFiles(files) { try { return !!(navigator.canShare && navigator.share && navigator.canShare({ files })); } catch { return false; } }
+async function shareOrDownload(files) {
+  // navigator.share must start before any await to keep the tap's permission
+  if (canShareFiles(files)) { await navigator.share({ files }); return 'shared'; }
+  for (const f of files) {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(f); a.download = f.name;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+    await wait(350);
+  }
+  return 'downloaded';
+}
+const safeName = s => String(s || '').replace(/[\\/:*?"<>|\[\]#%]/g, '').replace(/\s+/g, ' ').trim().slice(0, 60);
+function clipFileName(iv, idx) {
+  const a = iv.answers[idx], c = child(iv.childId);
+  return `${safeName(c ? c.name : 'Child')} - Age ${iv.age} (${iv.date.slice(0, 4)}) - ${pad(idx + 1)} ${safeName(shortFor(a))} [btc-${a.clip.id}].${extFor(a.clip.mime)}`;
+}
+function buildBackup() {
+  const images = {}; for (const [k, v] of IMG) images[k] = v;
+  return { app: APP_ID, kind: 'backup', appVersion: APP_VERSION, exportedAt: new Date().toISOString(),
+    readme: 'Birthday Time Capsule backup. Holds children, questions, notes, and which video belongs to which answer. Videos are saved separately; their file names contain [btc-…] codes that match the clip ids in this file.',
+    state: S, images };
+}
+function backupFile() {
+  const d = new Date();
+  const stamp = `${isoOf(d)} ${pad(d.getHours())}${pad(d.getMinutes())}`;
+  return new File([JSON.stringify(buildBackup())], `Birthday Time Capsule backup ${stamp}.json`, { type: 'application/json' });
+}
+async function prepareClipFiles(iv, dest) {
+  // returns [{file, a}] for clips present on this device
+  const list = iv.answers.map((a, idx) => ({ a, idx })).filter(x => x.a.clip && HAVE.has(x.a.clip.id));
+  const key = dest === 'photos' ? 'savedPhotos' : 'savedFiles';
+  let pick = list.filter(x => !x.a.clip[key]);
+  if (!pick.length) pick = list;
+  if (dest === 'photos') pick = pick.filter(x => !/webm/.test(x.a.clip.mime));
+  const out = [];
+  for (const x of pick) {
+    const blob = await getVideo(x.a.clip.id);
+    if (!blob) continue;
+    out.push({ a: x.a, file: new File([blob], clipFileName(iv, x.idx), { type: baseType(x.a.clip.mime) }) });
+  }
+  return out;
+}
+
+/* ---------- wake lock & theme */
+let WAKE = null;
+async function keepAwake(on) {
+  try {
+    if (on && 'wakeLock' in navigator && !WAKE) { WAKE = await navigator.wakeLock.request('screen'); WAKE.addEventListener('release', () => { WAKE = null; }); }
+    if (!on && WAKE) { await WAKE.release(); WAKE = null; }
+  } catch {}
+}
+function setTheme(c) { const m = $('meta[name=theme-color]'); if (m) m.setAttribute('content', c); }
+
+/* =========================================================
+   UI primitives: toast, sheets, confirm
+   ========================================================= */
+let toastT;
+function hideToast() { const t = $('.toast'); if (t) t.classList.remove('in'); clearTimeout(toastT); }
+function toast(msg, ms = 2600) {
+  let t = $('.toast');
+  if (!t) { t = document.createElement('div'); t.className = 'toast'; t.setAttribute('role', 'status'); document.body.appendChild(t); }
+  t.textContent = msg;
+  requestAnimationFrame(() => t.classList.add('in'));
+  clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove('in'), ms);
+}
+
+const layer = () => $('#layer');
+function sheet(html, { onMount, style = '', cls = '' } = {}) {
+  const wrap = document.createElement('div');
+  wrap.innerHTML = `<div class="scrim"></div><div class="sheet ${cls}" role="dialog" aria-modal="true" style="${style}"><div class="grabber"></div>${html}</div>`;
+  const scrim = wrap.firstElementChild, el = wrap.lastElementChild;
+  layer().appendChild(scrim); layer().appendChild(el);
+  let closed = false;
+  const api = {
+    el,
+    close() {
+      if (closed) return; closed = true;
+      el.classList.remove('in'); scrim.classList.remove('in');
+      setTimeout(() => { el.remove(); scrim.remove(); }, 420);
+    },
+  };
+  scrim.addEventListener('click', () => api.close());
+  el.addEventListener('click', e => { if (e.target.closest('[data-close]')) api.close(); });
+  requestAnimationFrame(() => requestAnimationFrame(() => { el.classList.add('in'); scrim.classList.add('in'); }));
+  if (onMount) onMount(el, api);
+  return api;
+}
+function actionSheet(title, items, { sub = '', style = '' } = {}) {
+  const html = `${title ? `<h2>${esc(title)}</h2>` : ''}${sub ? `<p class="sub">${esc(sub)}</p>` : ''}
+    <div class="actions-list">${items.map((it, i) => `<button data-i="${i}" class="${it.danger ? 'danger' : ''}">${it.icon || ''}<span>${esc(it.label)}${it.sub ? `<small>${esc(it.sub)}</small>` : ''}</span></button>`).join('')}</div>
+    <button class="btn soft" data-close>Cancel</button>`;
+  return sheet(html, {
+    style,
+    onMount(el, api) {
+      $$('.actions-list button', el).forEach(b => b.addEventListener('click', () => {
+        const it = items[+b.dataset.i]; api.close(); it.fn && it.fn();   // fn runs inside the tap
+      }));
+    },
+  });
+}
+function confirmSheet({ title, sub, ok, danger = true, onOk }) {
+  return sheet(`<h2>${esc(title)}</h2><p class="sub">${esc(sub)}</p>
+    <button class="btn primary" data-ok style="${danger ? 'background:var(--danger)' : ''}">${esc(ok)}</button>
+    <button class="btn soft" data-close>Cancel</button>`, {
+    onMount(el, api) { $('[data-ok]', el).addEventListener('click', () => { api.close(); onOk(); }); },
+  });
+}
+function messageSheet(title, sub) {
+  return sheet(`<h2>${esc(title)}</h2><p class="sub">${esc(sub)}</p><button class="btn primary" data-close>OK</button>`);
+}
+
+/* =========================================================
+   Navigation
+   ========================================================= */
+const stack = [];
+const VIEWS = {};
+function renderEntry(entry, keepScroll = false) {
+  const top = entry.el.scrollTop;
+  const out = VIEWS[entry.name](entry.params || {});
+  if (out == null) return false;
+  const res = typeof out === 'string' ? { html: out } : out;
+  entry.el.innerHTML = res.html;
+  entry.el.setAttribute('style', res.style || '');
+  if (keepScroll) entry.el.scrollTop = top;
+  entry.dirty = false;
+  return true;
+}
+function go(name, params = {}) {
+  const entry = { name, params, el: document.createElement('section') };
+  entry.el.className = 'view from-right';
+  if (!renderEntry(entry)) return;
+  const prev = stack[stack.length - 1];
+  $('#views').appendChild(entry.el);
+  stack.push(entry);
+  entry.el.getBoundingClientRect();
+  requestAnimationFrame(() => {
+    entry.el.classList.remove('from-right');
+    if (prev) { prev.el.classList.add('to-left'); setTimeout(() => { if (stack.includes(prev) && stack[stack.length - 1] !== prev) prev.el.classList.add('behind'); }, 460); }
+  });
+}
+function back() {
+  if (stack.length < 2) return;
+  const cur = stack.pop();
+  const prev = stack[stack.length - 1];
+  if (prev.dirty) renderEntry(prev, true);
+  prev.el.classList.remove('behind');
+  prev.el.getBoundingClientRect();
+  requestAnimationFrame(() => { prev.el.classList.remove('to-left'); cur.el.classList.add('from-right'); });
+  setTimeout(() => cur.el.remove(), 460);
+}
+function home() {
+  while (stack.length > 1) { const e = stack.pop(); e.el.remove(); }
+  const h = stack[0];
+  h.el.classList.remove('to-left', 'behind');
+  renderEntry(h);
+}
+function refresh() {
+  stack.forEach((e, i) => { if (i === stack.length - 1) { if (!renderEntry(e, true)) back(); } else e.dirty = true; });
+}
+function resetTo(name, params) {
+  for (const e of stack) e.el.remove();
+  stack.length = 0;
+  const entry = { name, params, el: document.createElement('section') };
+  entry.el.className = 'view fade-in';
+  renderEntry(entry);
+  $('#views').appendChild(entry.el);
+  stack.push(entry);
+}
+
+/* =========================================================
+   Candles (one per year; lit when that birthday has an interview)
+   ========================================================= */
+function candlesHTML(c, size = '') {
+  const age = currentAge(c);
+  const lit = new Set(S.interviews.filter(i => i.childId === c.id && answeredCount(i) > 0).map(i => i.age));
+  const bd = birthdayInfo(c.birthday);
+  if (age === 0) return `<div class="candles ${size}" aria-label="First birthday still ahead"><span class="candle ghost"><i></i></span></div>`;
+  const n = Math.min(age, size === 'xl' ? 12 : 21);
+  let h = '';
+  for (let a = age - n + 1; a <= age; a++) {
+    const isLit = lit.has(a);
+    h += `<span class="candle ${isLit ? 'lit' : ''} ${isLit && a === age && bd.daysSince <= 7 ? 'now' : ''}" title="Age ${a}${isLit ? ', interview recorded' : ''}"><i></i></span>`;
+  }
+  return `<div class="candles ${size}" aria-label="${lit.size} of ${age} birthdays recorded">${h}</div>`;
+}
+
+/* =========================================================
+   VIEW: welcome / home
+   ========================================================= */
+VIEWS.welcome = () => `
+  <div class="welcome">
+    <div class="candles xl" style="--kid:#E7B4AA;justify-content:flex-start">
+      <span class="candle lit now"><i></i></span><span class="candle lit now" style="--kid:#ADC6DE"><i></i></span><span class="candle lit now" style="--kid:#EDD59A"><i></i></span><span class="candle lit now" style="--kid:#B2C5A6"><i></i></span><span class="candle lit now" style="--kid:#C9B9DF"><i></i></span>
+    </div>
+    <h1>Birthday Time Capsule</h1>
+    <p class="lede">Ask the same questions every birthday. Years from now, watch the answers change.</p>
+    <button class="btn primary" data-act="add-child">Add your first child</button>
+    <button class="btn soft" data-act="restore">Restore from a backup file</button>
+    <p class="fine">No accounts. Everything stays on this iPhone and in your own iCloud.</p>
+  </div>`;
+
+VIEWS.home = () => {
+  if (!S.children.length) return VIEWS.welcome();
+  const kids = S.children;
+  const now = new Date();
+  let h = `<header class="home-head">
+      <div><p class="today">${esc(now.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' }))}</p>
+      <h1 class="app-title">Birthday Time Capsule</h1></div>
+      <button class="icon-btn" data-act="settings" aria-label="Settings">${I.gear}</button>
+    </header>`;
+  if (IOS && !STANDALONE) {
+    h += `<div class="quiet" style="margin:-6px 0 22px">${I.phone}<p><b>Open this from your Home Screen.</b> Safari and the Home Screen app keep separate storage, so record from the Home Screen icon. In Safari, tap Share, then Add to Home Screen.</p></div>`;
+  }
+  h += `<div class="kids n${Math.min(kids.length, 2)}">`;
+  const due = [];
+  for (const c of kids) {
+    const bd = birthdayInfo(c.birthday), age = currentAge(c);
+    const hasThisYear = S.interviews.some(i => i.childId === c.id && i.age === age && answeredCount(i) > 0);
+    const isToday = bd.daysSince === 0;
+    if (age > 0 && bd.daysSince <= 21 && !hasThisYear) due.push({ c, isToday, age });
+    let soon = '';
+    if (isToday) soon = `Birthday today`;
+    else if (bd.daysUntil === 1) soon = `Birthday tomorrow`;
+    else if (bd.daysUntil <= 14) soon = `Birthday in ${bd.daysUntil} days`;
+    h += `<button class="kid ${isToday ? 'bday' : ''}" data-act="child" data-id="${c.id}" style="${kidStyle(c)}">
+        <div class="kid-photo">${avatarHTML(c)}</div>
+        <p class="kid-name">${esc(c.name)}</p>
+        <p class="kid-age">${age === 0 ? 'Under a year' : `${age} years old`}</p>
+        ${soon ? `<p class="kid-soon">${soon}</p>` : ''}
+        ${candlesHTML(c)}
+      </button>`;
+  }
+  h += `</div>`;
+  if (due.length) {
+    h += `<div class="due">${due.map(({ c, isToday, age }) => `<button class="btn" style="${kidStyle(c)}" data-act="start" data-id="${c.id}"><span>${isToday ? `Start ${esc(c.name)}'s birthday interview` : `Record ${esc(c.name)}'s birthday interview`}</span></button>`).join('')}</div>`;
+  }
+  h += growCardHTML();
+  h += homeFooter();
+  return h;
+};
+
+function growCardHTML() {
+  // four ascending tiles: real thumbnails of one question across years when they exist
+  let tiles = [];
+  for (const qid of ['q-grow', 'q-intro', 'q-food']) {
+    for (const c of S.children) {
+      const t = S.interviews.filter(i => i.childId === c.id).sort((a, b) => a.age - b.age)
+        .map(i => i.answers.find(a => a.qid === qid && a.clip && a.clip.thumb && IMG.has(a.clip.thumb))).filter(Boolean).map(a => ({ src: IMG.get(a.clip.thumb), c }));
+      if (t.length > tiles.length) tiles = t;
+    }
+    if (tiles.length >= 2) break;
+  }
+  tiles = tiles.slice(-4);
+  const heights = [46, 62, 80, 100];
+  const fill = 4 - tiles.length;
+  const kidsCycle = S.children.length ? S.children : [{ color: 'rose' }];
+  let art = '';
+  for (let i = 0; i < 4; i++) {
+    const t = i >= fill ? tiles[i - fill] : null;
+    const c = t ? t.c : kidsCycle[i % kidsCycle.length];
+    art += `<span style="height:${heights[i]}%;${kidStyle(c)}">${t ? `<img src="${t.src}" alt="">` : ''}</span>`;
+  }
+  return `<button class="grow-card" data-act="grow">
+    <div class="grow-art">${art}</div>
+    <div><h2>Watch Me Grow</h2><p>Pick one question and watch every birthday's answer, one after another.</p></div>
+  </button>`;
+}
+
+function homeFooter() {
+  const clips = allClips();
+  const unsaved = unsavedFiles().length;
+  const missing = missingClips().length;
+  let h = '';
+  if (unsaved) {
+    h += `<div class="quiet">${I.cloud}<p><b>${plural(unsaved, 'video is', 'videos are')} only on this iPhone.</b> <button class="link" data-act="backup">Save to iCloud Drive</button></p></div>`;
+  } else if (clips.length && S.settings.lastChangeAt > S.settings.lastBackupAt + 1000) {
+    h += `<div class="quiet">${I.doc}<p>Notes or questions changed since your last backup file. <button class="link" data-act="backup">Back up</button></p></div>`;
+  } else if (clips.length && !missing) {
+    h += `<div class="quiet">${I.check}<p>Every video has been saved to iCloud Drive.</p></div>`;
+  }
+  if (missing) h += `<div class="quiet">${I.missing}<p>${plural(missing, 'video needs', 'videos need')} reconnecting. <button class="link" data-act="backup">Reconnect</button></p></div>`;
+  return h;
+}
+
+/* =========================================================
+   VIEW: child
+   ========================================================= */
+VIEWS.child = ({ id }) => {
+  const c = child(id); if (!c) return null;
+  const age = currentAge(c);
+  const ivs = kidInterviews(c.id);
+  const hasThisYear = ivs.some(i => i.age === age && answeredCount(i) > 0);
+  let h = `<div class="bar"><button class="back" data-act="back">${I.back}<span>Home</span></button>
+    <button class="text-btn" data-act="edit-child" data-id="${c.id}">Edit</button></div>
+    <div class="child-head"><div class="avatar">${avatarHTML(c)}</div>
+      <div><h1 class="child-name">${esc(c.name)}</h1>
+      <p class="child-sub">${age === 0 ? 'Under a year old' : `${age} years old`}<br>Born ${esc(fmtDate(c.birthday))}</p></div></div>
+    <div class="child-candles">${candlesHTML(c, 'lg')}<p class="hint">A candle is lit for every birthday with an interview.</p></div>
+    <div class="child-actions">`;
+  if (age > 0 && !hasThisYear) {
+    h += `<button class="btn primary" data-act="start" data-id="${c.id}">${I.video}<span>Record the ${ordinal(age)} birthday interview</span></button>`;
+  }
+  if (ivs.some(i => answeredCount(i))) h += `<button class="btn soft" data-act="grow" data-id="${c.id}">${I.film}<span>Watch ${esc(c.name)} grow</span></button>`;
+  h += `</div>`;
+  const door = doorframeHTML(c);
+  if (door) h += `<h2 class="section-title">On the doorframe</h2>${door}`;
+  h += `<h2 class="section-title">Birthdays</h2>`;
+  if (!ivs.length) {
+    h += `<div class="empty"><p>No birthdays recorded yet. ${age > 0 ? `Record this year's interview to start ${esc(c.name)}'s timeline, or add one from an earlier birthday.` : `The first interview can happen on ${esc(c.name)}'s first birthday.`}</p></div>`;
+  } else {
+    h += `<div class="timeline">`;
+    for (const iv of ivs) {
+      const cover = coverOf(iv);
+      const n = answeredCount(iv);
+      h += `<button class="tl-item" data-act="interview" data-id="${iv.id}">
+        <div class="tl-age">${iv.age}</div>
+        <div class="tl-body"><div class="tl-thumb">${cover ? `<img src="${cover}" alt="">` : avatarHTML(c)}</div>
+          <div><p class="tl-title">${ordinal(iv.age)} birthday</p><p class="tl-date">${esc(fmtDate(iv.date))}</p>
+          <p class="tl-meta">${n === iv.answers.length ? plural(n, 'answer') : `${n} of ${iv.answers.length} answers`}${iv.heightIn ? `, ${heightStr(iv.heightIn)} tall` : ''}</p>
+          ${iv.note ? `<p class="tl-note">${esc(iv.note)}</p>` : ''}</div></div>
+      </button>`;
+    }
+    h += `</div>`;
+  }
+  h += `<button class="add-past" data-act="start-past" data-id="${c.id}">${I.plus}<span>Add an earlier birthday</span></button>`;
+  return { html: h, style: kidStyle(c) };
+};
+
+function doorframeHTML(c) {
+  const pts = S.interviews.filter(i => i.childId === c.id && i.heightIn).sort((a, b) => a.age - b.age);
+  if (!pts.length) return '';
+  const W = 340, H = Math.max(200, 60 + pts.length * 22);
+  const lo = Math.min(...pts.map(p => p.heightIn)) - 4, hi = Math.max(...pts.map(p => p.heightIn)) + 3;
+  const y = v => 20 + (H - 40) * (1 - (v - lo) / Math.max(1, hi - lo));
+  const k = colorOf(c);
+  let marks = '';
+  let lastY = -Infinity;
+  for (const p of pts.slice().sort((a, b) => b.heightIn - a.heightIn)) {
+    const yy = y(p.heightIn);
+    const ly = Math.min(H - 8, Math.max(yy, lastY + 20)); lastY = ly;
+    marks += `<line x1="34" x2="104" y1="${yy}" y2="${yy}" stroke="#6F6877" stroke-width="1.6" stroke-linecap="round"/>
+      <path d="M104 ${yy} L118 ${ly}" stroke="#D9D2CC" stroke-width="1"/>
+      <text x="124" y="${ly + 5}" font-family="ui-serif, Georgia, serif" font-size="16" fill="#2E2A33">${p.age}</text>
+      <text x="150" y="${ly + 5}" font-family="-apple-system, system-ui, sans-serif" font-size="14" fill="#6F6877">${esc(heightStr(p.heightIn))}, ${esc(fmtMonthYear(p.date))}</text>`;
+  }
+  return `<svg class="door" viewBox="0 0 ${W} ${H}" role="img" aria-label="Height on each birthday">
+    <rect x="30" y="4" width="78" height="${H - 8}" rx="6" fill="#F2E8DB"/>
+    <rect x="30" y="4" width="8" height="${H - 8}" rx="3" fill="#E7DACA"/>
+    ${marks}
+    <circle cx="96" cy="${y(pts[pts.length - 1].heightIn)}" r="3.5" fill="${k.deep}"/>
+  </svg>`;
+}
+
+/* =========================================================
+   VIEW: interview (one birthday)
+   ========================================================= */
+VIEWS.interview = ({ id }) => {
+  const iv = interview(id); if (!iv) return null;
+  const c = child(iv.childId); if (!c) return null;
+  const cover = coverOf(iv);
+  const n = answeredCount(iv), left = iv.answers.length - n;
+  const playable = iv.answers.filter(a => a.clip && HAVE.has(a.clip.id)).length;
+  let h = `<div class="bar"><button class="back" data-act="back">${I.back}<span>${esc(c.name)}</span></button>
+      <button class="icon-btn" data-act="iv-menu" data-id="${iv.id}" aria-label="More">${I.more}</button></div>
+    <div class="hero">${cover ? `<img src="${cover}" alt="">` : `<div class="hero-blank">${avatarHTML(c)}</div>`}
+      ${playable ? `<button class="play-all" data-act="play-iv" data-id="${iv.id}">${I.play}<span>Play the interview</span></button>` : ''}</div>
+    <h1 class="iv-title">${esc(c.name)} at ${iv.age}</h1>
+    <p class="iv-date">${esc(fmtDate(iv.date, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' }))}</p>
+    <button class="note ${iv.note ? '' : 'empty-note'}" data-act="edit-note" data-id="${iv.id}">${iv.note ? esc(iv.note) : `Add a note about this birthday: who was there, what ${esc(c.name)} was into, what was happening in your family.`}</button>
+    ${iv.heightIn ? `<div class="facts"><span>Height <b>${heightStr(iv.heightIn)}</b></span></div>` : ''}
+    <h2 class="section-title">The interview <span style="font-family:var(--sans);font-size:15px;font-weight:400;color:var(--ink-3)">${n} of ${iv.answers.length}</span></h2>
+    <div class="answers">`;
+  iv.answers.forEach((a, idx) => {
+    const has = a.clip && HAVE.has(a.clip.id);
+    const gone = a.clip && !has;
+    const th = a.clip && a.clip.thumb && IMG.get(a.clip.thumb);
+    let meta = '';
+    if (has) meta = `${fmtDur(a.clip.duration)}${a.clip.savedFiles ? '' : ', only on this iPhone'}`;
+    else if (gone) meta = 'Video not on this iPhone. Tap to reconnect.';
+    else meta = a.who === 'parent' ? 'For Mom and Dad' : 'Not answered yet';
+    h += `<div class="ans">
+        <button class="ans-thumb ${a.clip ? (gone ? 'gone' : '') : 'add'}" data-act="answer" data-id="${iv.id}" data-i="${idx}" aria-label="${has ? 'Play' : 'Add a video'}">${has && th ? `<img src="${th}" alt="">` : gone ? I.missing : has ? '' : I.plus}</button>
+        <button class="ans-text" data-act="answer" data-id="${iv.id}" data-i="${idx}"><p class="ans-q">${esc(a.text)}</p><p class="ans-meta ${gone ? 'warn' : ''}">${meta}</p></button>
+        <button class="icon-btn" data-act="answer-menu" data-id="${iv.id}" data-i="${idx}" aria-label="Options for this answer">${I.more}</button>
+      </div>`;
+  });
+  h += `</div>`;
+  if (left) h += `<div class="continue"><button class="btn primary" data-act="continue" data-id="${iv.id}">${I.video}<span>${n ? `Continue the interview (${left} left)` : 'Start the interview'}</span></button></div>`;
+  h += `<button class="add-q" data-act="add-q-iv" data-id="${iv.id}">${I.plus}<span>Add a question to this birthday</span></button>`;
+
+  // kept-safe status
+  const withVid = iv.answers.filter(a => a.clip);
+  if (withVid.length) {
+    const sf = withVid.filter(a => a.clip.savedFiles).length, sp = withVid.filter(a => a.clip.savedPhotos).length;
+    h += `<h2 class="section-title">Kept safe</h2><div class="kept">
+      <div class="kept-row ${sf === withVid.length ? 'ok' : ''}">${I.cloud}<div><p class="k-title">iCloud Drive</p><p class="k-sub">${sf === withVid.length ? 'All originals saved' : sf ? `${sf} of ${withVid.length} saved` : 'Not saved yet'}</p></div>${sf === withVid.length ? I.check : ''}</div>
+      <div class="kept-row ${sp === withVid.length ? 'ok' : ''}">${I.photos}<div><p class="k-title">Photos</p><p class="k-sub">${sp === withVid.length ? 'All originals saved' : sp ? `${sp} of ${withVid.length} saved` : 'Not saved yet'}</p></div>${sp === withVid.length ? I.check : ''}</div>
+      </div>
+      <button class="btn soft" style="margin-top:16px" data-act="save-iv" data-id="${iv.id}">${I.share}<span>Save the originals</span></button>`;
+  }
+  return { html: h, style: kidStyle(c) };
+};
+
+/* =========================================================
+   VIEW: Watch Me Grow chooser
+   ========================================================= */
+VIEWS.grow = ({ who }) => {
+  const kids = S.children;
+  if (!who) who = kids.length ? kids[0].id : 'all';
+  const sel = who === 'all' ? kids : kids.filter(k => k.id === who);
+  const c0 = who === 'all' ? null : sel[0];
+  let h = `<div class="bar"><button class="back" data-act="back">${I.back}<span>Back</span></button><span></span></div>
+    <h1 class="page-title">Watch Me Grow</h1>
+    <p class="page-lede">Choose a question. Each birthday's answer plays in order, youngest to oldest.</p>
+    <div class="chips" role="group" aria-label="Whose answers">
+      ${kids.map(k => `<button class="chip" aria-pressed="${who === k.id}" data-act="grow-who" data-who="${k.id}" style="${kidStyle(k)}"><span class="mini">${avatarHTML(k)}</span>${esc(k.name)}</button>`).join('')}
+      ${kids.length > 1 ? `<button class="chip no-pic" aria-pressed="${who === 'all'}" data-act="grow-who" data-who="all">Together</button>` : ''}
+    </div>`;
+  // questions in library order, plus one-off questions that have answers
+  const qmap = new Map();
+  for (const q of S.questions.filter(q => !q.archived)) qmap.set(q.id, { id: q.id, text: q.text, items: [] });
+  for (const iv of S.interviews) {
+    if (!sel.find(k => k.id === iv.childId)) continue;
+    for (const a of iv.answers) {
+      if (!a.clip) continue;
+      if (!qmap.has(a.qid)) qmap.set(a.qid, { id: a.qid, text: a.text, items: [] });
+      qmap.get(a.qid).items.push({ iv, a });
+    }
+  }
+  const rows = [...qmap.values()].filter(r => r.items.length || question(r.id)?.active);
+  rows.sort((a, b) => (b.items.length > 0) - (a.items.length > 0));
+  if (!rows.some(r => r.items.length)) {
+    h += `<div class="empty" style="margin-top:20px"><p>Nothing to watch yet. After the first birthday interview, every question becomes a reel. It gets better each year.</p></div>`;
+  }
+  h += `<div class="list" style="margin-top:8px">`;
+  for (const r of rows) {
+    const ages = [...new Set(r.items.map(x => x.iv.age))].sort((a, b) => a - b);
+    const n = r.items.length;
+    let meta = 'No answers yet';
+    if (n) meta = who === 'all' ? `${plural(n, 'answer')}, ages ${ages[0]}${ages.length > 1 ? `–${ages[ages.length - 1]}` : ''}`
+      : ages.length === 1 ? `Age ${ages[0]}` : `Ages ${ages[0]} to ${ages[ages.length - 1]}, ${plural(n, 'birthday')}`;
+    const steps = r.items.slice().sort((a, b) => a.iv.age - b.iv.age).slice(-8).map((x, i, arr) => `<i style="height:${30 + 70 * ((i + 1) / arr.length)}%;${kidStyle(child(x.iv.childId))}"></i>`).join('');
+    h += `<button class="g-row" data-act="grow-play" data-q="${esc(r.id)}" data-who="${who}" ${n ? '' : 'disabled'}>
+      <div><p class="g-q">${esc(r.text)}</p><p class="g-meta">${meta}</p></div>
+      <div class="g-steps" aria-hidden="true">${steps}</div></button>`;
+  }
+  h += `</div>`;
+  return { html: h, style: c0 ? kidStyle(c0) : '' };
+};
+
+/* =========================================================
+   VIEW: settings, questions, backup, about
+   ========================================================= */
+VIEWS.settings = () => {
+  let h = `<div class="bar"><button class="back" data-act="back">${I.back}<span>Home</span></button><span></span></div>
+    <h1 class="page-title">Settings</h1>
+    <h2 class="section-title">Children</h2><div class="list">`;
+  for (const c of S.children) h += `<button class="row" data-act="edit-child" data-id="${c.id}" style="${kidStyle(c)}"><span class="mini-avatar">${avatarHTML(c)}</span><span><p class="r-title">${esc(c.name)}</p><p class="r-sub">Born ${esc(fmtDate(c.birthday))}</p></span><span class="chev">${I.chev}</span></button>`;
+  h += `<button class="row" data-act="add-child"><span class="r-ic">${I.plus}</span><span class="r-title">Add a child</span><span></span></button></div>
+    <h2 class="section-title">Capsule</h2><div class="list">
+    <button class="row" data-act="questions"><span class="r-ic">${I.list}</span><span><p class="r-title">Questions</p><p class="r-sub">${S.questions.filter(q => q.active && !q.archived).length} asked each year</p></span><span class="chev">${I.chev}</span></button>
+    <button class="row" data-act="backup"><span class="r-ic">${I.cloud}</span><span><p class="r-title">Backup and restore</p><p class="r-sub">${S.settings.lastBackupAt ? `Last backup file ${esc(new Date(S.settings.lastBackupAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }))}` : 'No backup file yet'}</p></span><span class="chev">${I.chev}</span></button>
+    <button class="row" data-act="about"><span class="r-ic">${I.info}</span><span><p class="r-title">Where your videos live</p><p class="r-sub">How storage and iCloud work here</p></span><span class="chev">${I.chev}</span></button>
+    </div>
+    <h2 class="section-title">This iPhone</h2><div id="storage-stats" class="list"><div class="stat-line"><span>Checking storage…</span><span></span></div></div>
+    <p class="hint" style="margin-top:26px">Birthday Time Capsule ${APP_VERSION}</p>`;
+  setTimeout(fillStorageStats, 0);
+  return h;
+};
+async function fillStorageStats() {
+  const el = $('#storage-stats'); if (!el) return;
+  let used = '', persisted = 'Unknown';
+  try { if (navigator.storage?.estimate) { const e = await navigator.storage.estimate(); used = fmtBytes(e.usage || 0); } } catch {}
+  try { if (navigator.storage?.persisted) persisted = (await navigator.storage.persisted()) ? 'Yes' : 'Not granted'; } catch {}
+  const vids = HAVE.size;
+  el.innerHTML = `
+    <div class="stat-line"><span>Videos stored in the app</span><span>${vids}${used ? `, ${used}` : ''}</span></div>
+    <div class="stat-line"><span>Opened from the Home Screen</span><span>${STANDALONE ? 'Yes' : 'No'}</span></div>
+    <div class="stat-line"><span>Protected from automatic cleanup</span><span>${persisted}</span></div>`;
+}
+
+VIEWS.questions = ({ reorder }) => {
+  const qs = S.questions.filter(q => !q.archived);
+  const arch = S.questions.filter(q => q.archived);
+  let h = `<div class="bar"><button class="back" data-act="back">${I.back}<span>Settings</span></button>
+    <div style="display:flex"><button class="text-btn" data-act="q-reorder">${reorder ? 'Done' : 'Reorder'}</button><button class="icon-btn" data-act="q-add" aria-label="Add a question">${I.plus}</button></div></div>
+    <h1 class="page-title">Questions</h1>
+    <p class="page-lede">Checked questions are asked every birthday, in this order. Keep the wording steady so answers line up in Watch Me Grow. Editing a question keeps it connected to past answers.</p>
+    <div class="list">`;
+  qs.forEach((q, i) => {
+    h += `<div class="q-row ${q.active ? '' : 'off'}">
+      <button class="check ${q.active ? 'on' : ''}" data-act="q-toggle" data-q="${q.id}" aria-label="${q.active ? 'Asked each year' : 'Not asked'}" aria-pressed="${q.active}">${I.check}</button>
+      <button class="q-text" data-act="q-edit" data-q="${q.id}"><p>${esc(q.text)}${q.who === 'parent' ? '<span class="tag">for parents</span>' : ''}</p>${q.nudge ? `<p class="q-sub">${esc(q.nudge.replace(/\{name\}/g, 'your child'))}</p>` : ''}</button>
+      ${reorder ? `<div class="order-btns"><button class="icon-btn" data-act="q-move" data-q="${q.id}" data-d="-1" aria-label="Move up" ${i === 0 ? 'disabled style="opacity:.25"' : ''}>${I.up}</button><button class="icon-btn" data-act="q-move" data-q="${q.id}" data-d="1" aria-label="Move down" ${i === qs.length - 1 ? 'disabled style="opacity:.25"' : ''}>${I.down}</button></div>` : `<span></span>`}
+    </div>`;
+  });
+  h += `</div>`;
+  if (arch.length) {
+    h += `<h2 class="section-title">Retired questions</h2><p class="page-lede">Past answers to these are kept and still play in Watch Me Grow.</p><div class="list">`;
+    for (const q of arch) h += `<div class="q-row off"><span></span><p class="q-text">${esc(q.text)}</p><button class="text-btn" data-act="q-restore" data-q="${q.id}">Bring back</button></div>`;
+    h += `</div>`;
+  }
+  return h;
+};
+
+VIEWS.backup = () => {
+  const unsaved = unsavedFiles();
+  const missing = missingClips();
+  const byIv = new Map();
+  for (const x of unsaved) { if (!byIv.has(x.iv.id)) byIv.set(x.iv.id, []); byIv.get(x.iv.id).push(x); }
+  let h = `<div class="bar"><button class="back" data-act="back">${I.back}<span>Back</span></button><span></span></div>
+    <h1 class="page-title">Backup and restore</h1>
+    <p class="page-lede">Your originals belong in iCloud Drive. The backup file remembers everything else: questions, notes, heights, and which video goes with which answer.</p>
+    <h2 class="section-title">Videos</h2>`;
+  if (!allClips().length) h += `<p class="empty">No videos yet.</p>`;
+  else if (!unsaved.length) h += `<div class="kept"><div class="kept-row ok">${I.cloud}<div><p class="k-title">Every video is saved to iCloud Drive</p><p class="k-sub">${plural(allClips().length, 'video')} across ${plural(S.interviews.filter(i => answeredCount(i)).length, 'birthday')}</p></div>${I.check}</div></div>`;
+  else {
+    h += `<p class="page-lede">${plural(unsaved.length, 'video is', 'videos are')} only on this iPhone. Save each birthday below.</p><div class="list">`;
+    for (const [ivId, xs] of byIv) {
+      const iv = interview(ivId), c = child(iv.childId);
+      h += `<button class="row" data-act="save-iv" data-id="${ivId}" style="${kidStyle(c)}"><span class="mini-avatar">${avatarHTML(c)}</span><span><p class="r-title">${esc(ivTitle(iv))}</p><p class="r-sub">${plural(xs.length, 'video')} to save</p></span><span class="chev">${I.chev}</span></button>`;
+    }
+    h += `</div>`;
+  }
+  h += `<h2 class="section-title">Backup file</h2>
+    <p class="page-lede">${S.settings.lastBackupAt ? `Last saved ${esc(new Date(S.settings.lastBackupAt).toLocaleString(undefined, { month: 'long', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' }))}.` : 'Not saved yet.'} It also goes along automatically whenever you save videos to iCloud Drive.</p>
+    <button class="btn primary" data-act="save-backup">${I.doc}<span>Save the backup file</span></button>
+    <h2 class="section-title">Restore on this iPhone</h2>
+    <p class="page-lede">On a new phone: restore the newest backup file first, then reconnect the videos from your iCloud Drive folder. You can select them all at once.</p>
+    <button class="btn soft" data-act="restore">${I.upload}<span>Restore from a backup file</span></button>
+    <button class="btn soft" data-act="reconnect">${I.link}<span>Reconnect videos</span></button>`;
+  if (missing.length) h += `<p class="hint" style="margin-top:12px">${plural(missing.length, 'video is', 'videos are')} listed in the capsule but not on this iPhone yet.</p>`;
+  return h;
+};
+
+VIEWS.about = () => `
+  <div class="bar"><button class="back" data-act="back">${I.back}<span>Back</span></button><span></span></div>
+  <h1 class="page-title">Where your videos live</h1>
+  <div class="prose">
+    <p>These are irreplaceable, so here is exactly how this app keeps them, including what it can't do.</p>
+    <h3>1. Inside the app, on this iPhone</h3>
+    <p>Every video you keep is stored in the app's private storage so it plays instantly. Opened from the Home Screen, iOS doesn't wipe it after a week away the way it can for Safari tabs. Still, <b>it is not a backup.</b> It can be lost if you remove the Home Screen icon, clear website data, move to a new phone, or the iPhone runs critically low on space, and an iPhone backup isn't guaranteed to bring it back.</p>
+    <p>Safari and the Home Screen app keep separate storage. Always record from the Home Screen icon.</p>
+    <h3>2. iCloud Drive: your main backup</h3>
+    <p>Web apps on iPhone are not allowed to write to iCloud on their own. When you tap <b>Save to iCloud Drive</b>, the iPhone share sheet opens. Choose <b>Save to Files</b>, then your <b>Birthday Time Capsule</b> folder in iCloud Drive. The backup file is saved in the same step.</p>
+    <p>Each video's file name ends with a short code like [btc-k3f9a2m7]. That code is how the app matches a file back to the right answer later.</p>
+    <h3>3. Photos: a second copy</h3>
+    <p><b>Save to Photos</b> opens the same share sheet. Choose <b>Save Videos</b>. iCloud Photos keeps them, and they're easy to share with family. Photos doesn't keep file names, so if you ever reconnect from Photos, it's one answer at a time.</p>
+    <h3>4. Moving to a new phone</h3>
+    <ol><li>Add the app to the new phone's Home Screen and open it from there.</li>
+    <li>Choose Restore from a backup file and pick the newest one in your iCloud Drive folder.</li>
+    <li>Choose Reconnect videos and select all the videos in that folder.</li></ol>
+    <h3>5. What the checkmarks mean</h3>
+    <p>The app marks a video as saved when the share sheet reports that it finished. It can't look inside iCloud, so if you're unsure, open the Files app and check the folder.</p>
+    <h3>Two phones</h3>
+    <p>Each phone keeps its own copy. Restoring the newest backup file and reconnecting videos brings the other phone up to date.</p>
+  </div>`;
+
+/* =========================================================
+   Sheets: child form, interview setup, note, question editor
+   ========================================================= */
+function childForm(c, { onDone } = {}) {
+  const isNew = !c;
+  const draft = c ? { ...c } : { id: 'c-' + uid(6), name: '', birthday: '', color: COLORS[S.children.length % COLORS.length].id, photo: null };
+  let photoData = draft.photo && IMG.get(draft.photo) || null;
+  const s = sheet(`
+    <h2>${isNew ? 'Add a child' : `Edit ${esc(c.name)}`}</h2>
+    <div class="photo-pick"><div class="avatar" id="cf-av" style="${kidStyle(draft)}">${photoData ? `<img src="${photoData}" alt="">` : `<div class="initial">${esc((draft.name || '+').charAt(0).toUpperCase())}</div>`}</div>
+      <button class="text-btn" id="cf-photo" style="padding-left:0">${photoData ? 'Change photo' : 'Add a photo'}</button></div>
+    <label class="field"><span>Name</span><input class="input" id="cf-name" value="${esc(draft.name)}" autocomplete="off" autocapitalize="words" placeholder="First name"></label>
+    <label class="field"><span>Birthday</span><input class="input" id="cf-bday" type="date" value="${esc(draft.birthday)}" max="${todayISO()}"></label>
+    <div class="field"><span>Color</span><div class="swatches">${COLORS.map(k => `<button class="swatch" style="--c:${k.soft}" data-color="${k.id}" aria-label="${k.name}" aria-pressed="${draft.color === k.id}"></button>`).join('')}</div></div>
+    <button class="btn primary" id="cf-save">${isNew ? 'Add child' : 'Save'}</button>
+    ${isNew ? '<button class="btn soft" data-close>Cancel</button>' : `<button class="btn danger" id="cf-del">Remove ${esc(c.name)}</button>`}
+  `, {
+    style: kidStyle(draft),
+    onMount(el, api) {
+      const av = $('#cf-av', el);
+      const setAv = () => { av.setAttribute('style', kidStyle(draft)); av.innerHTML = photoData ? `<img src="${photoData}" alt="">` : `<div class="initial">${esc(($('#cf-name', el).value || '+').charAt(0).toUpperCase())}</div>`; };
+      $('#cf-name', el).addEventListener('input', setAv);
+      $$('.swatch', el).forEach(b => b.addEventListener('click', () => { draft.color = b.dataset.color; $$('.swatch', el).forEach(x => x.setAttribute('aria-pressed', x === b)); setAv(); }));
+      $('#cf-photo', el).addEventListener('click', () => {
+        pickFiles({ accept: 'image/*' }).then(async f => {
+          if (!f[0]) return;
+          try { photoData = await imageToDataURL(f[0], 720, 3 / 4); setAv(); $('#cf-photo', el).textContent = 'Change photo'; }
+          catch { toast("That photo couldn't be opened. Try another."); }
+        });
+      });
+      $('#cf-save', el).addEventListener('click', async () => {
+        const name = $('#cf-name', el).value.trim(), bday = $('#cf-bday', el).value;
+        if (!name) { $('#cf-name', el).focus(); toast('Add a name first.'); return; }
+        if (!bday) { $('#cf-bday', el).focus(); toast('Add a birthday so ages work out.'); return; }
+        draft.name = name; draft.birthday = bday; draft.updatedAt = Date.now();
+        if (photoData && photoData !== (draft.photo && IMG.get(draft.photo))) {
+          const pid = 'p-' + draft.id + '-' + uid(4);
+          await putImage(pid, photoData);
+          if (draft.photo) await delImage(draft.photo);
+          draft.photo = pid;
+        }
+        if (isNew) S.children.push(draft); else Object.assign(c, draft);
+        await commit(); ensurePersist();
+        api.close();
+        if (isNew && S.children.length === 1) { resetTo('home'); setTimeout(afterFirstChild, 450); }
+        else { refresh(); if (onDone) setTimeout(onDone, 450); else if (isNew) maybeStorageIntro(); }
+      });
+      if (!isNew) $('#cf-del', el).addEventListener('click', () => {
+        const ivs = S.interviews.filter(i => i.childId === c.id);
+        const vids = ivs.reduce((n, i) => n + answeredCount(i), 0);
+        api.close();
+        confirmSheet({ title: `Remove ${c.name}?`, sub: `This removes ${plural(ivs.length, 'birthday')} and ${plural(vids, 'video')} from this app. Anything you saved to iCloud Drive or Photos stays there.`, ok: `Remove ${c.name}`,
+          async onOk() {
+            for (const iv of ivs) await deleteInterviewData(iv);
+            S.interviews = S.interviews.filter(i => i.childId !== c.id);
+            await delImage(c.photo);
+            S.children = S.children.filter(x => x.id !== c.id);
+            await commit(); home(); toast(`${c.name} was removed.`);
+          } });
+      });
+    },
+  });
+  return s;
+}
+function afterFirstChild() {
+  sheet(`<h2>Add another child?</h2><p class="sub">Each child gets a timeline. The questions are shared, so you can watch them side by side.</p>
+    <button class="btn primary" data-another>Add another child</button><button class="btn soft" data-later>Not now</button>`, {
+    onMount(el, api) {
+      $('[data-another]', el).addEventListener('click', () => { api.close(); setTimeout(() => childForm(null, { onDone: maybeStorageIntro }), 300); });
+      $('[data-later]', el).addEventListener('click', () => { api.close(); setTimeout(maybeStorageIntro, 380); });
+    },
+  });
+}
+function maybeStorageIntro() {
+  if (S.settings.seenStorage) return;
+  S.settings.seenStorage = true; commit();
+  storageIntro();
+}
+function storageIntro() {
+  // stacked under "add another" so it appears once that closes
+  sheet(`<h2>Before you record</h2>
+    <p class="sub">Videos are stored inside this app so they play instantly, but the app can't put them in iCloud by itself.</p>
+    <div class="prose" style="font-size:15px"><p><b>After each interview, tap Save to iCloud Drive.</b> In the share sheet choose Save to Files, then a folder named Birthday Time Capsule. That's your real backup, and the app's backup file goes with it.</p>
+    <p><b>Save to Photos</b> adds a second copy to your library.</p>
+    ${IOS && !STANDALONE ? `<p><b>Add this app to your Home Screen first</b> (Share, then Add to Home Screen) and record from there. Safari and the Home Screen app don't share storage.</p>` : ''}</div>
+    <button class="btn primary" data-close>Got it</button>`);
+}
+
+function setupSheet(childId, { past = false } = {}) {
+  const c = child(childId); if (!c) return;
+  const qs = S.questions.filter(q => !q.archived);
+  const chosen = new Set(qs.filter(q => q.active).map(q => q.id));
+  let date = todayISO();
+  if (past) { const b = parseISO(c.birthday); const t = new Date(); date = isoOf(new Date(t.getFullYear() - 1, b.getMonth(), b.getDate())); if (date < c.birthday) date = todayISO(); }
+  const extra = [];
+  const title = () => { const a = ageOn(c.birthday, date); return a ? `${c.name} at ${a}` : `${c.name}'s first year`; };
+  sheet(`
+    <h2 id="su-title">${esc(title())}</h2>
+    <p class="sub" id="su-sub"></p>
+    <label class="field"><span>Date of the interview</span><input class="input" type="date" id="su-date" value="${date}" min="${c.birthday}" max="${todayISO()}"></label>
+    <button class="disclose" id="su-toggle"><span>Questions</span><span id="su-count"></span></button>
+    <div id="su-list" hidden>
+      <div class="setup-q">${qs.map(q => `<div class="q-row"><button class="check ${chosen.has(q.id) ? 'on' : ''}" data-q="${q.id}" aria-pressed="${chosen.has(q.id)}">${I.check}</button><p class="q-text">${esc(q.text)}</p><span></span></div>`).join('')}</div>
+      <label class="field" style="margin-top:12px"><span>A question just for this year</span><input class="input" id="su-extra" placeholder="e.g. What was your favorite part of the beach trip?"></label>
+      <button class="toggle-line" id="su-every"><span class="check" id="su-every-c">${I.check}</span><span>Ask it every year</span></button>
+    </div>
+    <button class="btn primary" id="su-go">${I.video}<span>${past ? 'Create this birthday' : 'Start the interview'}</span></button>
+    <button class="btn soft" data-close>Cancel</button>
+  `, {
+    style: kidStyle(c),
+    onMount(el, api) {
+      let every = false;
+      const upd = () => {
+        $('#su-title', el).textContent = title();
+        $('#su-count', el).textContent = `${chosen.size} chosen`;
+        const a = ageOn(c.birthday, date);
+        const exists = S.interviews.find(i => i.childId === c.id && i.age === a);
+        $('#su-sub', el).textContent = exists ? `There's already an interview for age ${a}. Starting will continue it.` : past ? 'Pick the birthday date. You can record now or add videos you already have.' : 'Questions appear one at a time. Record each answer, then keep it or try again.';
+      };
+      upd();
+      $('#su-date', el).addEventListener('change', e => { if (e.target.value) { date = e.target.value; upd(); } });
+      $('#su-toggle', el).addEventListener('click', () => { const l = $('#su-list', el); l.hidden = !l.hidden; });
+      $$('.setup-q .check', el).forEach(b => b.addEventListener('click', () => {
+        const id = b.dataset.q; chosen.has(id) ? chosen.delete(id) : chosen.add(id);
+        b.classList.toggle('on', chosen.has(id)); b.setAttribute('aria-pressed', chosen.has(id)); upd();
+      }));
+      $('#su-every', el).addEventListener('click', () => { every = !every; $('#su-every-c', el).classList.toggle('on', every); });
+      $('#su-go', el).addEventListener('click', async () => {
+        const a = ageOn(c.birthday, date);
+        if (a < 1 && !past) { /* first-year interviews are allowed but unusual */ }
+        const ex = $('#su-extra', el).value.trim();
+        if (ex) {
+          const qid = (every ? 'q-' : 'x-') + uid(6);
+          if (every) S.questions.push({ id: qid, text: ex, short: ex.slice(0, 28), nudge: '', who: 'child', active: true, archived: false, updatedAt: Date.now() });
+          extra.push({ qid, text: ex, who: 'child', clip: null });
+        }
+        let iv = S.interviews.find(i => i.childId === c.id && i.age === a);
+        if (!iv) {
+          iv = { id: 'iv-' + uid(8), childId: c.id, date, age: a, note: '', heightIn: null, cover: null, createdAt: Date.now(), updatedAt: Date.now(),
+            answers: qs.filter(q => chosen.has(q.id)).map(q => ({ qid: q.id, text: q.text, who: q.who, clip: null })) };
+          S.interviews.push(iv);
+        } else {
+          for (const q of qs) if (chosen.has(q.id) && !iv.answers.some(x => x.qid === q.id)) iv.answers.push({ qid: q.id, text: q.text, who: q.who, clip: null });
+        }
+        iv.answers.push(...extra);
+        // keep the parent message last
+        iv.answers.sort((x, y) => (x.who === 'parent') - (y.who === 'parent'));
+        iv.updatedAt = Date.now();
+        await commit(); ensurePersist();
+        api.close();
+        if (past) { go('interview', { id: iv.id }); return; }
+        const todo = iv.answers.map((x, i) => i).filter(i => !iv.answers[i].clip);
+        if (!todo.length) { go('interview', { id: iv.id }); return; }
+        Rec.open(iv.id, todo);
+      });
+    },
+  });
+}
+
+function noteSheet(iv) {
+  const c = child(iv.childId);
+  const ft = iv.heightIn ? Math.floor(iv.heightIn / 12) : '', inch = iv.heightIn ? Math.round((iv.heightIn - Math.floor(iv.heightIn / 12) * 12) * 2) / 2 : '';
+  sheet(`<h2>${esc(c.name)} at ${iv.age}</h2>
+    <label class="field"><span>A note about this birthday</span><textarea class="input" id="ns-note" placeholder="Who came, what ${esc(c.name)} was into, what was happening in our family…">${esc(iv.note || '')}</textarea></label>
+    <div class="field"><span>Height on this birthday</span><div class="two">
+      <label class="unit"><input class="input" id="ns-ft" inputmode="numeric" type="number" min="1" max="7" value="${ft}" placeholder="3"><em>ft</em></label>
+      <label class="unit"><input class="input" id="ns-in" inputmode="decimal" type="number" min="0" max="11.5" step="0.5" value="${inch}" placeholder="6"><em>in</em></label></div></div>
+    <button class="btn primary" id="ns-save">Save</button><button class="btn soft" data-close>Cancel</button>`, {
+    style: kidStyle(c),
+    onMount(el, api) {
+      $('#ns-save', el).addEventListener('click', async () => {
+        iv.note = $('#ns-note', el).value.trim();
+        const f = parseFloat($('#ns-ft', el).value), i = parseFloat($('#ns-in', el).value);
+        iv.heightIn = (isFinite(f) && f > 0) ? f * 12 + (isFinite(i) ? i : 0) : (isFinite(i) && i > 0 ? i : null);
+        iv.updatedAt = Date.now();
+        await commit(); api.close(); refresh();
+      });
+    },
+  });
+}
+
+function questionSheet(q) {
+  const isNew = !q;
+  const d = q ? { ...q } : { id: 'q-' + uid(6), text: '', short: '', nudge: '', who: 'child', active: true, archived: false };
+  sheet(`<h2>${isNew ? 'New question' : 'Edit question'}</h2>
+    <label class="field"><span>Question</span><input class="input" id="qs-text" value="${esc(d.text)}" placeholder="What's your favorite…"></label>
+    <label class="field"><span>Short label (shown in lists and file names)</span><input class="input" id="qs-short" value="${esc(d.short)}" placeholder="Favorite…"></label>
+    <label class="field"><span>Follow-up idea for you (optional)</span><input class="input" id="qs-nudge" value="${esc(d.nudge)}" placeholder="Why? Tell me more."></label>
+    <button class="toggle-line" id="qs-parent"><span class="check ${d.who === 'parent' ? 'on' : ''}">${I.check}</span><span>This one is for Mom and Dad to answer</span></button>
+    <button class="btn primary" id="qs-save">${isNew ? 'Add question' : 'Save'}</button>
+    ${isNew ? '<button class="btn soft" data-close>Cancel</button>' : '<button class="btn danger" id="qs-retire">Stop asking this question</button>'}`, {
+    onMount(el, api) {
+      $('#qs-parent', el).addEventListener('click', e => { d.who = d.who === 'parent' ? 'child' : 'parent'; $('.check', e.currentTarget).classList.toggle('on', d.who === 'parent'); });
+      $('#qs-save', el).addEventListener('click', async () => {
+        const text = $('#qs-text', el).value.trim(); if (!text) { toast('Write the question first.'); return; }
+        d.text = text; d.short = $('#qs-short', el).value.trim() || text.replace(/\?$/, '').slice(0, 32); d.nudge = $('#qs-nudge', el).value.trim(); d.updatedAt = Date.now();
+        if (isNew) S.questions.splice(S.questions.filter(x => !x.archived).length, 0, d); else Object.assign(q, d);
+        await commit(); api.close(); refresh();
+      });
+      if (!isNew) $('#qs-retire', el).addEventListener('click', async () => { q.archived = true; q.active = false; q.updatedAt = Date.now(); await commit(); api.close(); refresh(); toast('Retired. Past answers are kept.'); });
+    },
+  });
+}
+
+/* ---------- saving originals (share sheet) */
+function saveSheet(iv) {
+  const c = child(iv.childId);
+  sheet(`<h2>Save ${esc(c.name)} at ${iv.age}</h2>
+    <p class="sub">Each button opens the iPhone share sheet. Pick the option named under it.</p>
+    <div id="sv-panel"></div>
+    <button class="btn soft" data-close style="margin-top:18px">Done</button>`, {
+    style: kidStyle(c),
+    onMount(el) { mountSavePanel($('#sv-panel', el), iv); },
+  });
+}
+function mountSavePanel(host, iv) {
+  const state = { files: null, photos: null };
+  const withVid = () => iv.answers.filter(a => a.clip && HAVE.has(a.clip.id));
+  const render = (busy) => {
+    const all = withVid();
+    const sf = all.length && all.every(a => a.clip.savedFiles), sp = all.length && all.every(a => a.clip.savedPhotos);
+    host.innerHTML = `
+      <button class="save-opt" data-dest="files" ${busy || !state.files ? 'disabled' : ''}><span class="ic">${I.cloud}</span>
+        <span><b>${sf ? 'Saved to iCloud Drive' : 'Save to iCloud Drive'}</b><small>${state.files ? `Choose Save to Files, then your Birthday Time Capsule folder. ${plural(state.files.length, 'video')} plus the backup file.` : 'Getting the videos ready…'}</small></span>
+        <span class="st">${sf ? I.check : !state.files ? '<span class="spinner"></span>' : ''}</span></button>
+      <button class="save-opt" data-dest="photos" ${busy || !state.photos || !state.photos.length ? 'disabled' : ''}><span class="ic">${I.photos}</span>
+        <span><b>${sp ? 'Saved to Photos' : 'Save to Photos'}</b><small>${state.photos ? (state.photos.length ? `Choose Save ${state.photos.length === 1 ? 'Video' : `${state.photos.length} Videos`}.` : 'These videos can’t go to Photos.') : 'Getting the videos ready…'}</small></span>
+        <span class="st">${sp ? I.check : !state.photos ? '<span class="spinner"></span>' : ''}</span></button>`;
+    $$('.save-opt', host).forEach(b => b.addEventListener('click', () => doSave(b.dataset.dest)));
+  };
+  const doSave = dest => {
+    const list = state[dest]; if (!list) return;
+    let files = list.map(x => x.file);
+    let withBackup = false;
+    if (dest === 'files') {
+      const withB = files.concat(backupFile());
+      if (canShareFiles(withB) || !canShareFiles(files)) { files = withB; withBackup = true; }
+    }
+    shareOrDownload(files).then(async how => {
+      const key = dest === 'files' ? 'savedFiles' : 'savedPhotos';
+      const now = Date.now();
+      for (const x of list) x.a.clip[key] = now;
+      iv.updatedAt = now;
+      S.settings.lastChangeAt = now;
+      if (withBackup) S.settings.lastBackupAt = now + 1;
+      await DB.put('state', 'main', S);
+      toast(how === 'downloaded' ? 'Downloaded.' : dest === 'files' ? (withBackup ? 'Saved. Check the Files app if you want to be sure.' : 'Videos saved. Save the backup file from Backup and restore too.') : 'Sent to Photos.', 3600);
+      await prep(); refresh();
+    }).catch(e => {
+      if (e && e.name === 'AbortError') return;
+      messageSheet("That didn't finish", `The share sheet reported: ${e && e.message ? e.message : 'unknown error'}. Try again, or save fewer videos at a time from each answer's menu.`);
+    });
+  };
+  const prep = async () => {
+    state.files = null; state.photos = null; render(false);
+    try {
+      state.files = await prepareClipFiles(iv, 'files');
+      state.photos = await prepareClipFiles(iv, 'photos');
+    } catch (e) { state.files = state.files || []; state.photos = state.photos || []; }
+    render(false);
+  };
+  prep();
+}
+
+/* =========================================================
+   Interview data operations
+   ========================================================= */
+async function deleteInterviewData(iv) {
+  for (const a of iv.answers) if (a.clip) { await delVideo(a.clip.id); await delImage(a.clip.thumb); }
+  await delImage(iv.cover);
+}
+async function saveClipToAnswer(iv, idx, p) {
+  const a = iv.answers[idx];
+  const old = a.clip;
+  const id = uid(8);
+  await putVideo(id, p.blob);
+  let thumb = p.thumb, duration = p.duration;
+  if (!thumb || !duration) { const t = await thumbFromBlob(p.blob); thumb = thumb || t.thumb; duration = duration || t.duration; }
+  let thumbId = null;
+  if (thumb) { thumbId = 't-' + id; await putImage(thumbId, thumb); }
+  a.clip = { id, mime: baseType(p.mime || p.blob.type, p.name), size: p.blob.size, duration: duration || 0, thumb: thumbId, source: p.source, at: Date.now(), savedFiles: 0, savedPhotos: 0 };
+  iv.updatedAt = Date.now();
+  await commit();
+  if (old) { await delVideo(old.id); await delImage(old.thumb); }
+  ensurePersist();
+}
+async function attachFileToClip(clip, file) {
+  await putVideo(clip.id, file);
+  if (!clip.thumb || !IMG.has(clip.thumb)) {
+    const t = await thumbFromBlob(file);
+    if (t.thumb) { clip.thumb = 't-' + clip.id; await putImage(clip.thumb, t.thumb); }
+    if (!clip.duration && t.duration) clip.duration = t.duration;
+  }
+  if (!clip.mime) clip.mime = baseType(file.type, file.name);
+}
+
+/* =========================================================
+   Recorder
+   ========================================================= */
+const Rec = {
+  el: null, iv: null, list: [], pos: 0, stream: null, facing: 'environment', mr: null, chunks: [], t0: 0, tick: null,
+  pending: null, reviewURL: null, state: 'idle', busy: false, thumb: null, dur: 0,
+
+  build() {
+    if (this.el) return;
+    const el = document.createElement('div');
+    el.className = 'rec';
+    el.innerHTML = `
+      <div class="rec-top"><button class="icon-btn" data-r="close" aria-label="Close">${I.close}</button>
+        <span class="rec-count"></span><button class="icon-btn" data-r="flip" aria-label="Switch camera">${I.flip}</button></div>
+      <div class="rec-stage">
+        <video class="pv" playsinline muted autoplay></video>
+        <video class="rv" playsinline hidden></video>
+        <button class="rv-play" data-r="rvplay" hidden aria-label="Play"><span>${I.play}</span></button>
+        <div class="rec-timer" hidden>0:00</div>
+        <div class="rec-fallback" hidden></div>
+      </div>
+      <div class="rec-panel">
+        <p class="rec-q"></p><p class="rec-nudge"></p><div class="rec-last-wrap"></div>
+        <div class="rec-controls">
+          <button class="side-btn" data-r="more">${I.upload}<span>Video</span></button>
+          <button class="rec-btn" data-r="rec" aria-label="Record"><i></i></button>
+          <button class="side-btn right" data-r="skip">${I.skip}<span>Skip</span></button>
+        </div>
+        <div class="review-ctl" hidden><button class="btn soft" data-r="retake">Try again</button><button class="btn primary" data-r="keep">Keep</button></div>
+      </div>`;
+    document.body.appendChild(el);
+    this.el = el;
+    this.pv = $('.pv', el); this.rv = $('.rv', el);
+    el.addEventListener('click', e => { const b = e.target.closest('[data-r]'); if (b) this.on(b.dataset.r, b); });
+    this.rv.addEventListener('ended', () => { $('.rv-play', el).hidden = false; });
+    this.rv.addEventListener('play', () => { $('.rv-play', el).hidden = true; });
+    this.rv.addEventListener('click', () => { if (!this.rv.paused) this.rv.pause(); });
+    this.rv.addEventListener('pause', () => { $('.rv-play', el).hidden = false; });
+    document.addEventListener('visibilitychange', () => {
+      if (!this.el.classList.contains('open')) return;
+      if (document.visibilityState === 'hidden' && this.state === 'recording') this.stopRec(true);
+      if (document.visibilityState === 'visible') {
+        const live = this.stream && this.stream.getVideoTracks().some(t => t.readyState === 'live');
+        if (!live && this.state !== 'review') this.startCam();
+        keepAwake(true);
+      }
+    });
+  },
+
+  async open(ivId, indices) {
+    this.build();
+    this.iv = interview(ivId); this.list = indices; this.pos = 0; this.pending = null;
+    this.el.classList.add('open'); setTheme('#151316');
+    keepAwake(true);
+    this.setState('ready');
+    this.renderQ();
+    await this.startCam();
+  },
+
+  async startCam() {
+    this.stopCam();
+    const fb = $('.rec-fallback', this.el);
+    fb.hidden = true;
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || !window.MediaRecorder) {
+      this.showFallback(location.protocol !== 'https:' && location.hostname !== 'localhost'
+        ? 'The in-app camera only works when the app is opened from its secure (https) address.'
+        : "This browser can't record inside the app.");
+      return;
+    }
+    try {
+      this.stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: this.facing }, width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30 } },
+        audio: true,
+      });
+      this.pv.srcObject = this.stream;
+      this.pv.classList.toggle('mirror', this.facing === 'user');
+      await this.pv.play().catch(() => {});
+      this.camOK = true;
+      fb.hidden = true;
+    } catch (e) {
+      this.camOK = false;
+      const why = e && e.name === 'NotAllowedError' ? 'Camera access was turned off. You can allow it in Settings › Safari › Camera, or record with the Camera app below.'
+        : e && e.name === 'NotFoundError' ? 'No camera was found on this device.'
+        : "The camera couldn't start.";
+      this.showFallback(why);
+    }
+    this.syncButtons();
+  },
+  showFallback(msg) {
+    this.camOK = false;
+    const fb = $('.rec-fallback', this.el);
+    fb.hidden = false;
+    fb.innerHTML = `<h3>Record with the Camera app instead</h3><p>${esc(msg)} Your answers still save to this interview.</p>
+      <button class="btn primary" data-r="native">${I.camera}<span>Record with the Camera app</span></button>
+      <button class="btn soft" data-r="library">${I.upload}<span>Choose a video</span></button>`;
+    this.syncButtons();
+  },
+  stopCam() {
+    if (this.stream) { this.stream.getTracks().forEach(t => t.stop()); this.stream = null; }
+    this.pv.srcObject = null;
+  },
+
+  renderQ() {
+    const idx = this.list[this.pos];
+    const a = this.iv.answers[idx];
+    const c = child(this.iv.childId);
+    $('.rec-count', this.el).textContent = `${this.pos + 1} of ${this.list.length}`;
+    $('.rec-q', this.el).textContent = a.text;
+    $('.rec-nudge', this.el).textContent = nudgeFor(a.qid, c);
+    // last year's answer to the same question
+    const prev = S.interviews.filter(i => i.childId === this.iv.childId && i.age < this.iv.age)
+      .sort((x, y) => y.age - x.age)
+      .map(i => ({ i, a: i.answers.find(z => z.qid === a.qid && z.clip && HAVE.has(z.clip.id)) })).find(x => x.a);
+    const w = $('.rec-last-wrap', this.el);
+    if (prev) {
+      const th = prev.a.clip.thumb && IMG.get(prev.a.clip.thumb);
+      w.innerHTML = `<button class="rec-last" data-r="last">${th ? `<img src="${th}" alt="">` : I.play}<span>${prev.i.age === this.iv.age - 1 ? 'Last year' : 'At'} ${prev.i.age === this.iv.age - 1 ? `at ${prev.i.age}` : prev.i.age}</span></button>`;
+      this.prevClip = { iv: prev.i, a: prev.a };
+    } else { w.innerHTML = ''; this.prevClip = null; }
+  },
+
+  setState(s) {
+    this.state = s;
+    this.el.classList.toggle('recording', s === 'recording');
+    const review = s === 'review' || s === 'saving';
+    $('.rec-controls', this.el).hidden = review;
+    $('.review-ctl', this.el).hidden = !review;
+    this.rv.hidden = !review; this.pv.hidden = review;
+    $('.rv-play', this.el).hidden = true;
+    $('.rec-timer', this.el).hidden = s !== 'recording';
+    const fb = $('.rec-fallback', this.el);
+    fb.hidden = review || this.camOK || !fb.innerHTML.trim();
+    const keep = $('[data-r=keep]', this.el);
+    const last = this.pos >= this.list.length - 1;
+    keep.innerHTML = s === 'saving' ? '<span class="spinner"></span><span>Saving</span>' : (last ? 'Keep and finish' : 'Keep and next');
+    keep.disabled = s === 'saving';
+    $('[data-r=retake]', this.el).disabled = s === 'saving';
+    this.syncButtons();
+  },
+  syncButtons() {
+    const rb = $('[data-r=rec]', this.el);
+    rb.disabled = !this.camOK;
+    rb.setAttribute('aria-label', this.state === 'recording' ? 'Stop' : 'Record');
+    $('[data-r=flip]', this.el).style.visibility = this.camOK && this.state === 'ready' ? 'visible' : 'hidden';
+  },
+
+  on(act) {
+    switch (act) {
+      case 'close': return this.close();
+      case 'flip': this.facing = this.facing === 'user' ? 'environment' : 'user'; return this.startCam();
+      case 'rec': return this.state === 'recording' ? this.stopRec() : this.startRec();
+      case 'skip': return this.next();
+      case 'retake': return this.retake();
+      case 'keep': return this.keep();
+      case 'rvplay': this.rv.play().catch(() => {}); return;
+      case 'native': return this.pickNative();
+      case 'library': return this.pickLibrary();
+      case 'last': if (this.prevClip) { Player.unlock(); Player.single(this.prevClip.iv, this.prevClip.a); } return;
+      case 'more':
+        return actionSheet('Add a video another way', [
+          { label: 'Choose a video', sub: 'From Photos or Files, like one you already filmed', icon: I.upload, fn: () => this.pickLibrary() },
+          { label: 'Record with the Camera app', sub: "Higher quality. It won't be added to Photos until you save it.", icon: I.camera, fn: () => this.pickNative() },
+        ]);
+    }
+  },
+
+  startRec() {
+    if (!this.stream || this.state !== 'ready') return;
+    const mime = pickMime();
+    const opts = { videoBitsPerSecond: 5000000, audioBitsPerSecond: 128000 };
+    if (mime) opts.mimeType = mime;
+    try { this.mr = new MediaRecorder(this.stream, opts); }
+    catch { try { this.mr = new MediaRecorder(this.stream); } catch (e) { this.showFallback("Recording couldn't start here."); return; } }
+    this.mime = mime;
+    this.chunks = [];
+    this.mr.ondataavailable = e => { if (e.data && e.data.size) this.chunks.push(e.data); };
+    this.mr.onstop = () => this.onStopped();
+    this.thumb = null;
+    this.mr.start(1000);
+    this.t0 = performance.now();
+    this.setState('recording');
+    const tm = $('.rec-timer', this.el);
+    tm.textContent = '0:00';
+    this.tick = setInterval(() => { tm.textContent = fmtDur((performance.now() - this.t0) / 1000); }, 250);
+    setTimeout(() => { if (this.state === 'recording' && !this.thumb) this.thumb = frameFrom(this.pv); }, 1200);
+  },
+  stopRec(silent) {
+    if (!this.mr || this.state !== 'recording') return;
+    // unlock the review player with sound while still inside the tap
+    if (!silent) { this.rv.muted = false; try { this.rv.load(); } catch {} }
+    this.dur = (performance.now() - this.t0) / 1000;
+    if (!this.thumb) this.thumb = frameFrom(this.pv);
+    clearInterval(this.tick);
+    this.state = 'finishing';
+    try { this.mr.stop(); } catch { this.onStopped(); }
+  },
+  onStopped() {
+    const type = baseType((this.mr && this.mr.mimeType) || this.mime || 'video/mp4');
+    const blob = new Blob(this.chunks, { type });
+    this.chunks = [];
+    if (!blob.size) { toast('Nothing was recorded. Try again.'); this.setState('ready'); return; }
+    this.showReview({ blob, mime: type, duration: this.dur, thumb: this.thumb, source: 'recorded' });
+  },
+  showReview(p) {
+    this.pending = p;
+    if (this.reviewURL) URL.revokeObjectURL(this.reviewURL);
+    this.reviewURL = URL.createObjectURL(p.blob);
+    this.setState('review');
+    this.rv.src = this.reviewURL;
+    this.rv.muted = false;
+    const pr = this.rv.play();
+    if (pr && pr.catch) pr.catch(() => { $('.rv-play', this.el).hidden = false; });
+  },
+  retake() {
+    this.rv.pause(); this.rv.removeAttribute('src'); this.rv.load();
+    this.pending = null;
+    this.setState('ready');
+    const live = this.stream && this.stream.getVideoTracks().some(t => t.readyState === 'live');
+    if (!live) this.startCam();
+  },
+  async keep() {
+    if (!this.pending || this.state === 'saving') return;
+    this.rv.pause();
+    this.setState('saving');
+    try {
+      await saveClipToAnswer(this.iv, this.list[this.pos], this.pending);
+      this.pending = null;
+      this.rv.removeAttribute('src'); this.rv.load();
+      this.next(true);
+    } catch (e) {
+      this.setState('review');
+      messageSheet("This answer wasn't saved", (e && e.message) || 'Something went wrong while saving. Try Keep again.');
+    }
+  },
+  next(kept) {
+    if (this.state === 'recording') return;
+    this.pos++;
+    if (this.pos >= this.list.length) return this.finish();
+    this.renderQ();
+    this.setState('ready');
+    const live = this.stream && this.stream.getVideoTracks().some(t => t.readyState === 'live');
+    if (this.camOK && !live) this.startCam();
+  },
+  pickLibrary() { pickFiles({ accept: 'video/*' }).then(f => this.usePicked(f[0], 'library')); },
+  pickNative() { pickFiles({ accept: 'video/*', capture: this.facing === 'user' ? 'user' : 'environment' }).then(f => this.usePicked(f[0], 'camera')); },
+  async usePicked(file, source) {
+    if (!file) return;
+    this.rv.muted = false;
+    this.showReview({ blob: file, mime: baseType(file.type, file.name), name: file.name, duration: 0, thumb: null, source });
+  },
+  close() {
+    const leave = () => {
+      if (this.mr && this.state === 'recording') { this.mr.onstop = null; try { this.mr.stop(); } catch {} clearInterval(this.tick); }
+      this.stopCam(); this.rv.pause(); this.rv.removeAttribute('src');
+      this.el.classList.remove('open'); setTheme('#FCFAF8'); keepAwake(false);
+      this.setState('idle');
+      const iv = this.iv;
+      refresh();
+      const top = stack[stack.length - 1];
+      if (answeredCount(iv) && !(top.name === 'interview' && top.params.id === iv.id)) {
+        if (top.name === 'child' && top.params.id === iv.childId) go('interview', { id: iv.id });
+        else if (top.name === 'home') { go('child', { id: iv.childId }); setTimeout(() => go('interview', { id: iv.id }), 40); }
+      }
+    };
+    if (this.state === 'recording' || this.pending) {
+      confirmSheet({ title: 'Leave the interview?', sub: this.pending ? "The answer you're reviewing hasn't been kept yet. Answers you already kept are saved." : "This answer is still recording and won't be kept. Answers you already kept are saved.", ok: 'Leave', onOk: leave });
+    } else leave();
+  },
+  finish() {
+    this.stopCam(); this.el.classList.remove('open'); keepAwake(false); setTheme('#FCFAF8');
+    this.setState('idle');
+    Finish.open(this.iv);
+  },
+};
+
+/* =========================================================
+   Finish screen
+   ========================================================= */
+const Finish = {
+  open(iv) {
+    const c = child(iv.childId);
+    let el = $('.finish');
+    if (!el) { el = document.createElement('div'); el.className = 'finish'; document.body.appendChild(el); }
+    const n = answeredCount(iv);
+    el.setAttribute('style', kidStyle(c));
+    el.innerHTML = `<div class="inner">
+      ${candlesHTML(c, 'lg')}
+      <h1>${esc(c.name)} at ${iv.age} is in the capsule.</h1>
+      <p class="lede">${plural(n, 'answer is', 'answers are')} saved on this iPhone${n < iv.answers.length ? `, with ${iv.answers.length - n} left to record whenever you like` : ''}.</p>
+      <h2>Now keep the originals safe</h2>
+      <p class="why">This app can't reach iCloud on its own. Each button opens the share sheet; pick the option it names.</p>
+      <div id="fin-save"></div>
+      <div class="done-row">
+        <button class="btn soft" id="fin-note">${I.pencil}<span>Add a note about today</span></button>
+        <button class="btn primary" id="fin-done">Done</button>
+      </div></div>`;
+    el.classList.add('open');
+    mountSavePanel($('#fin-save', el), iv);
+    const close = () => {
+      el.classList.remove('open');
+      // land on the birthday page
+      home();
+      go('child', { id: iv.childId });
+      setTimeout(() => go('interview', { id: iv.id }), 40);
+    };
+    $('#fin-done', el).onclick = close;
+    $('#fin-note', el).onclick = () => { close(); setTimeout(() => noteSheet(iv), 520); };
+    confetti(c);
+  },
+};
+
+function confetti(c) {
+  if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  const cv = document.createElement('canvas'); cv.id = 'confetti';
+  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  cv.width = innerWidth * dpr; cv.height = innerHeight * dpr;
+  cv.style.width = innerWidth + 'px'; cv.style.height = innerHeight + 'px';
+  document.body.appendChild(cv);
+  const ctx = cv.getContext('2d'); ctx.scale(dpr, dpr);
+  const k = colorOf(c);
+  const cols = [k.soft, k.deep, '#E8A33D', '#F8D77F', '#FFFFFF', '#C9B9DF', '#ADC6DE'];
+  const P = Array.from({ length: 110 }, () => ({
+    x: innerWidth / 2 + (Math.random() - .5) * 80, y: innerHeight * .32,
+    vx: (Math.random() - .5) * 9, vy: -Math.random() * 11 - 4,
+    r: Math.random() * Math.PI, vr: (Math.random() - .5) * .3,
+    w: 5 + Math.random() * 6, h: 3 + Math.random() * 4, c: cols[Math.floor(Math.random() * cols.length)],
+  }));
+  const t0 = performance.now();
+  const f = t => {
+    const dt = t - t0;
+    ctx.clearRect(0, 0, innerWidth, innerHeight);
+    for (const p of P) {
+      p.vy += .32; p.vx *= .99; p.x += p.vx; p.y += p.vy; p.r += p.vr;
+      ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(p.r);
+      ctx.globalAlpha = Math.max(0, 1 - dt / 2600);
+      ctx.fillStyle = p.c; ctx.fillRect(-p.w / 2, -p.h / 2, p.w, p.h);
+      ctx.restore();
+    }
+    if (dt < 2600) requestAnimationFrame(f); else cv.remove();
+  };
+  requestAnimationFrame(f);
+}
+
+/* =========================================================
+   Player (title cards + clips)
+   ========================================================= */
+const Player = {
+  el: null, items: [], i: 0, token: 0, urls: new Map(), endHTML: '', paused: false,
+  build() {
+    if (this.el) return;
+    const el = document.createElement('div');
+    el.className = 'player';
+    el.innerHTML = `<video playsinline preload="auto"></video>
+      <div class="p-tap"><button data-p="prev" aria-label="Previous"></button><button data-p="toggle" aria-label="Pause or play"></button><button data-p="next" aria-label="Next"></button></div>
+      <div class="p-cap hide"><b></b><span></span></div>
+      <div class="p-paused"><span>${I.pause}</span></div>
+      <div class="p-card"></div>
+      <div class="p-top"><div class="p-bars"></div><button class="icon-btn" data-p="close" aria-label="Close">${I.close}</button></div>
+      <button class="p-tapplay" data-p="tapplay" aria-label="Play"><span>${I.play}</span></button>`;
+    document.body.appendChild(el);
+    this.el = el; this.v = $('video', el);
+    el.addEventListener('click', e => { const b = e.target.closest('[data-p]'); if (b) this.on(b.dataset.p); });
+    this.v.addEventListener('ended', () => this.go(this.i + 1));
+    this.v.addEventListener('timeupdate', () => {
+      const bar = $$('.p-bars span', this.el)[this.items[this.i]?.bar];
+      if (bar && this.v.duration && isFinite(this.v.duration)) bar.firstChild.style.width = Math.min(100, 100 * this.v.currentTime / this.v.duration) + '%';
+    });
+  },
+  unlock() {
+    // call inside a tap: lets later play() calls run with sound on iPhone
+    this.build();
+    this.v.muted = false;
+    try { this.v.load(); } catch {}
+  },
+  open(items, { endHTML = '', style = '' } = {}) {
+    this.build();
+    this.items = items; this.endHTML = endHTML;
+    let b = 0; for (const it of items) if (it.clipId) it.bar = b++;
+    $('.p-bars', this.el).innerHTML = Array.from({ length: b }, () => '<span><i></i></span>').join('');
+    this.el.setAttribute('style', style);
+    this.el.classList.add('open'); setTheme('#000000');
+    keepAwake(true);
+    this.go(0);
+  },
+  async url(id) {
+    if (this.urls.has(id)) return this.urls.get(id);
+    const b = await getVideo(id); if (!b) return null;
+    const u = URL.createObjectURL(b); this.urls.set(id, u); return u;
+  },
+  showCard(html, style = '') {
+    const card = $('.p-card', this.el);
+    card.setAttribute('style', style);
+    card.innerHTML = html;
+    card.classList.remove('anim', 'interactive'); void card.offsetWidth; card.classList.add('anim');
+    if (card.querySelector('button')) card.classList.add('interactive');
+    card.classList.add('show'); this.el.classList.add('on-card');
+  },
+  hideCard() { $('.p-card', this.el).classList.remove('show'); this.el.classList.remove('on-card'); },
+  async go(i) {
+    const tk = ++this.token;
+    this.el.classList.remove('paused', 'need-tap'); this.paused = false;
+    $('.p-cap', this.el).classList.add('hide');
+    try { this.v.pause(); } catch {}
+    const bars = $$('.p-bars span', this.el);
+    if (i < 0) i = 0;
+    if (i >= this.items.length) return this.end();
+    this.i = i;
+    const before = this.items.slice(0, i).filter(x => x.clipId).length;
+    bars.forEach((s, n) => { const d = n < before; s.classList.toggle('done', d); s.firstChild.style.width = d ? '100%' : '0'; });
+    const it = this.items[i];
+    const urlP = it.clipId ? this.url(it.clipId) : Promise.resolve(null);
+    if (it.card) {
+      this.showCard(it.card, it.style || '');
+      const u = await urlP;
+      if (tk !== this.token) return;
+      if (u) { this.v.src = u; try { this.v.load(); } catch {} }
+      await wait(it.dur || 2400);
+      if (tk !== this.token) return;
+    }
+    if (!it.clipId) { this.hideCard(); return this.go(i + 1); }
+    const u = await urlP;
+    if (tk !== this.token) return;
+    if (!u) {
+      this.showCard(`<p class="c-l1">This video isn't on this iPhone.</p><p class="c-l2">Reconnect it from Backup and restore.</p>`);
+      await wait(2200); if (tk !== this.token) return;
+      return this.go(i + 1);
+    }
+    if (this.v.getAttribute('src') !== u) this.v.src = u;
+    this.el.setAttribute('style', it.style || this.el.getAttribute('style') || '');
+    const cap = $('.p-cap', this.el);
+    $('b', cap).textContent = it.capTitle || ''; $('span', cap).textContent = it.capSub || '';
+    this.hideCard();
+    try {
+      await this.v.play();
+      if (it.capTitle) { cap.classList.remove('hide'); setTimeout(() => { if (tk === this.token) cap.classList.add('hide'); }, 3200); }
+    } catch (e) {
+      if (tk === this.token) this.el.classList.add('need-tap');
+    }
+  },
+  end() {
+    ++this.token;
+    if (!this.endHTML) return this.close();
+    $$('.p-bars span', this.el).forEach(s => s.classList.add('done'));
+    this.showCard(this.endHTML + `<div class="c-btns"><button class="btn primary" data-p="again">Watch again</button><button class="btn soft" data-p="close">Done</button></div>`, this.items[0]?.style || '');
+  },
+  on(a) {
+    switch (a) {
+      case 'close': return this.close();
+      case 'next': return this.go(this.i + 1);
+      case 'prev': return this.go(this.i - 1);
+      case 'again': this.unlock(); return this.go(0);
+      case 'tapplay': this.el.classList.remove('need-tap'); this.v.play().catch(() => this.el.classList.add('need-tap')); return;
+      case 'toggle':
+        if ($('.p-card', this.el).classList.contains('show') && this.items[this.i]?.clipId) { this.token++; const it = this.items[this.i]; this.hideCard(); this.playNow(it); return; }
+        if (this.v.paused) { this.v.play().catch(() => {}); this.el.classList.remove('paused'); }
+        else { this.v.pause(); this.el.classList.add('paused'); }
+    }
+  },
+  async playNow(it) {
+    const tk = ++this.token;
+    const u = await this.url(it.clipId);
+    if (tk !== this.token || !u) return;
+    if (this.v.getAttribute('src') !== u) this.v.src = u;
+    try { await this.v.play(); } catch { this.el.classList.add('need-tap'); }
+  },
+  close() {
+    ++this.token;
+    try { this.v.pause(); } catch {}
+    this.v.removeAttribute('src'); try { this.v.load(); } catch {}
+    for (const u of this.urls.values()) URL.revokeObjectURL(u);
+    this.urls.clear();
+    this.hideCard();
+    this.el.classList.remove('open', 'paused', 'need-tap');
+    setTheme(Rec.el && Rec.el.classList.contains('open') ? '#151316' : '#FCFAF8');
+    if (!(Rec.el && Rec.el.classList.contains('open'))) keepAwake(false);
+  },
+
+  /* ---- builders */
+  interview(iv) {
+    const c = child(iv.childId);
+    const st = kidStyle(c);
+    const items = [{ card: `${candlesHTML(c, 'lg')}<p class="c-title">${esc(c.name)} at ${iv.age}</p><p class="c-l2">${esc(fmtDate(iv.date, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' }))}</p>${iv.note ? `<p class="c-note">${esc(iv.note)}</p>` : ''}`, dur: iv.note ? 4200 : 2800, style: st }];
+    iv.answers.forEach((a, n) => {
+      if (!a.clip) return;
+      items.push({ card: `<p class="c-qbig">${esc(a.text)}</p>`, dur: 2100, clipId: a.clip.id, style: st, capTitle: `${c.name} at ${iv.age}`, capSub: a.text });
+    });
+    this.open(items, { style: st, endHTML: `<p class="c-title">Happy ${ordinal(iv.age)} birthday, ${esc(c.name)}.</p>` });
+  },
+  single(iv, a) {
+    const c = child(iv.childId);
+    const st = kidStyle(c);
+    this.open([{ card: `<p class="c-q">${esc(a.text)}</p><p class="c-l1" style="margin-top:14px">${esc(c.name)} at ${iv.age}</p>`, dur: 1400, clipId: a.clip.id, style: st, capTitle: `${c.name} at ${iv.age}`, capSub: a.text }], { style: st });
+  },
+  grow(qid, who) {
+    const kids = who === 'all' ? S.children : S.children.filter(k => k.id === who);
+    const found = [];
+    for (const iv of S.interviews) {
+      if (!kids.find(k => k.id === iv.childId)) continue;
+      const a = iv.answers.find(x => x.qid === qid && x.clip);
+      if (a) found.push({ iv, a, c: child(iv.childId) });
+    }
+    found.sort((x, y) => x.iv.age - y.iv.age || x.iv.date.localeCompare(y.iv.date));
+    if (!found.length) return;
+    const qtext = (question(qid) || found[found.length - 1].a).text;
+    const ages = found.map(f => f.iv.age);
+    const lo = ages[0], hi = ages[ages.length - 1];
+    const name = who === 'all' ? (kids.length === 2 ? `${kids[0].name} and ${kids[1].name}` : 'Everyone') : kids[0].name;
+    const st0 = who === 'all' ? '' : kidStyle(kids[0]);
+    const items = [{ card: `<p class="c-title">${esc(qtext)}</p><p class="c-l2" style="margin-top:16px">${esc(name)}${lo !== hi ? `, ages ${lo} to ${hi}` : `, age ${lo}`}</p>`, dur: 3000, style: st0 }];
+    for (const f of found) {
+      const st = kidStyle(f.c);
+      items.push({
+        card: `<p class="c-q">${esc(f.a.text)}</p><p class="c-big">${f.iv.age}</p><p class="c-l1">${who === 'all' ? `${esc(f.c.name)} at ${f.iv.age}` : `Age ${f.iv.age}`}</p><p class="c-l2">${esc(fmtMonthYear(f.iv.date))}</p>`,
+        dur: 2500, clipId: f.a.clip.id, style: st, capTitle: `${f.c.name} at ${f.iv.age}`, capSub: fmtMonthYear(f.iv.date),
+      });
+    }
+    const endHTML = lo !== hi
+      ? `<p class="c-big" style="font-size:min(30vw,150px)">${lo}<span style="color:var(--ink-3);font-size:.5em;vertical-align:middle;margin:0 .15em">to</span>${hi}</p><p class="c-l1">${esc(name)}, still growing.</p>`
+      : `<p class="c-l1">${esc(name)} at ${lo}.</p><p class="c-l2">Next birthday adds the next answer.</p>`;
+    this.open(items, { style: st0, endHTML });
+  },
+};
+
+/* =========================================================
+   Restore & reconnect
+   ========================================================= */
+function mergeList(local, incoming, key = 'id') {
+  let added = 0;
+  for (const it of incoming || []) {
+    const cur = local.find(x => x[key] === it[key]);
+    if (!cur) { local.push(it); added++; }
+    else if ((it.updatedAt || 0) > (cur.updatedAt || 0)) Object.assign(cur, it);
+  }
+  return added;
+}
+async function restoreFrom(file) {
+  let data;
+  try { data = JSON.parse(await file.text()); } catch { throw new Error("That file isn't a Birthday Time Capsule backup."); }
+  if (!data || data.app !== APP_ID || !data.state) throw new Error("That file isn't a Birthday Time Capsule backup.");
+  const st = data.state;
+  const wasEmpty = !S.children.length && !S.interviews.length;
+  const kids = mergeList(S.children, st.children);
+  mergeList(S.questions, st.questions);
+  const ivs = mergeList(S.interviews, st.interviews);
+  S.settings.lastBackupAt = Math.max(S.settings.lastBackupAt || 0, (st.settings && st.settings.lastBackupAt) || 0);
+  S.settings.seenStorage = true;
+  for (const [k, v] of Object.entries(data.images || {})) if (!IMG.has(k)) await putImage(k, v);
+  await commit(); ensurePersist();
+  if (wasEmpty) { S.settings.lastBackupAt = S.settings.lastChangeAt + 1; await DB.put('state', 'main', S); }
+  return { kids, ivs, missing: missingClips().length };
+}
+async function reconnectFiles(files) {
+  const byId = new Map(allClips().map(x => [x.a.clip.id, x]));
+  let matched = 0, already = 0, unknown = 0;
+  for (const f of files) {
+    const m = f.name.match(/\[btc-([a-z0-9]{4,16})\]/i);
+    const x = m && byId.get(m[1].toLowerCase());
+    if (!x) { unknown++; continue; }
+    if (HAVE.has(x.a.clip.id)) { already++; continue; }
+    await attachFileToClip(x.a.clip, f);
+    x.a.clip.savedFiles = x.a.clip.savedFiles || Date.now();   // it came from Files, so a copy exists there
+    matched++;
+  }
+  const wasBackedUp = (S.settings.lastBackupAt || 0) >= (S.settings.lastChangeAt || 0);
+  await commit();
+  if (wasBackedUp) { S.settings.lastBackupAt = S.settings.lastChangeAt + 1; await DB.put('state', 'main', S); }
+  return { matched, already, unknown, missing: missingClips().length };
+}
+
+/* =========================================================
+   Actions (delegated taps)
+   ========================================================= */
+const ACT = {
+  back: () => back(),
+  settings: () => go('settings'),
+  questions: () => go('questions'),
+  backup: () => go('backup'),
+  about: () => go('about'),
+  child: d => go('child', { id: d.id }),
+  interview: d => go('interview', { id: d.id }),
+  'add-child': () => childForm(),
+  'edit-child': d => childForm(child(d.id)),
+  start: d => {
+    const c = child(d.id); const age = currentAge(c);
+    const iv = S.interviews.find(i => i.childId === c.id && i.age === age);
+    if (iv && iv.answers.some(a => !a.clip)) { Rec.open(iv.id, iv.answers.map((a, i) => i).filter(i => !iv.answers[i].clip)); return; }
+    setupSheet(d.id);
+  },
+  'start-past': d => setupSheet(d.id, { past: true }),
+  continue: d => { const iv = interview(d.id); Rec.open(iv.id, iv.answers.map((a, i) => i).filter(i => !iv.answers[i].clip)); },
+  'play-iv': d => { Player.unlock(); Player.interview(interview(d.id)); },
+  grow: d => go('grow', { who: d.id || (S.children[0] && S.children[0].id) }),
+  'grow-who': d => { const top = stack[stack.length - 1]; top.params.who = d.who; renderEntry(top, true); },
+  'grow-play': d => { Player.unlock(); Player.grow(d.q, d.who); },
+  'edit-note': d => noteSheet(interview(d.id)),
+  'save-iv': d => saveSheet(interview(d.id)),
+  answer: d => {
+    const iv = interview(d.id), idx = +d.i, a = iv.answers[idx];
+    if (a.clip && HAVE.has(a.clip.id)) { Player.unlock(); Player.single(iv, a); return; }
+    if (a.clip) return reconnectOne(iv, a);
+    Rec.open(iv.id, [idx]);
+  },
+  'answer-menu': d => answerMenu(interview(d.id), +d.i),
+  'iv-menu': d => ivMenu(interview(d.id)),
+  'add-q-iv': d => addQuestionToIv(interview(d.id)),
+  'save-backup': () => {
+    let f = backupFile();
+    if (!canShareFiles([f])) { const t = new File([f], f.name, { type: 'text/plain' }); if (canShareFiles([t])) f = t; }
+    shareOrDownload([f]).then(async () => { S.settings.lastBackupAt = Date.now(); await DB.put('state', 'main', S); refresh(); toast('Backup file saved.'); })
+      .catch(e => { if (e && e.name !== 'AbortError') messageSheet("The backup file wasn't saved", e.message || 'Try again.'); });
+  },
+  restore: () => {
+    pickFiles({ accept: 'application/json,.json' }).then(async f => {
+      if (!f[0]) return;
+      try {
+        const r = await restoreFrom(f[0]);
+        if (stack[0].name === 'home') resetTo('home');
+        refresh();
+        sheet(`<h2>Backup restored</h2><p class="sub">${plural(r.kids, 'child', 'children')} and ${plural(r.ivs, 'birthday')} added. ${r.missing ? `${plural(r.missing, 'video needs', 'videos need')} reconnecting from your iCloud Drive folder.` : 'All videos are on this iPhone.'}</p>
+          ${r.missing ? `<button class="btn primary" data-rc>${I.link}<span>Reconnect videos</span></button>` : ''}<button class="btn soft" data-close>Done</button>`,
+          { onMount(el, api) { const b = $('[data-rc]', el); if (b) b.addEventListener('click', () => { api.close(); ACT.reconnect(); }); } });
+      } catch (e) { messageSheet("That backup couldn't be restored", e.message); }
+    });
+  },
+  reconnect: () => {
+    pickFiles({ accept: 'video/*', multiple: true }).then(async files => {
+      if (!files.length) return;
+      toast(`Reconnecting ${plural(files.length, 'video')}…`, 6000);
+      try {
+        const r = await reconnectFiles(files);
+        hideToast(); refresh();
+        messageSheet(r.matched ? `Reconnected ${plural(r.matched, 'video')}` : 'No videos were reconnected',
+          `${r.already ? `${plural(r.already, 'was', 'were')} already here. ` : ''}${r.unknown ? `${plural(r.unknown, "file didn't", "files didn't")} match this capsule (Photos renames files, so reconnect those one answer at a time). ` : ''}${r.missing ? `${plural(r.missing, 'video is', 'videos are')} still missing.` : 'Every video is on this iPhone now.'}`);
+      } catch (e) { hideToast(); messageSheet('Reconnecting stopped', e.message || 'Try again with fewer files.'); }
+    });
+  },
+  'q-toggle': async d => { const q = question(d.q); q.active = !q.active; q.updatedAt = Date.now(); await commit(); refresh(); },
+  'q-edit': d => questionSheet(question(d.q)),
+  'q-add': () => questionSheet(null),
+  'q-reorder': () => { const top = stack[stack.length - 1]; top.params.reorder = !top.params.reorder; renderEntry(top, true); },
+  'q-move': async d => {
+    const live = S.questions.filter(q => !q.archived);
+    const i = live.findIndex(q => q.id === d.q), j = i + (+d.d);
+    if (j < 0 || j >= live.length) return;
+    [live[i], live[j]] = [live[j], live[i]];
+    S.questions = [...live, ...S.questions.filter(q => q.archived)];
+    await commit(); const top = stack[stack.length - 1]; renderEntry(top, true);
+  },
+  'q-restore': async d => { const q = question(d.q); q.archived = false; q.active = true; q.updatedAt = Date.now(); await commit(); refresh(); },
+};
+
+function reconnectOne(iv, a) {
+  actionSheet('Reconnect this video', [
+    { label: 'Choose the video', sub: 'From your iCloud Drive folder or Photos', icon: I.link, fn: () => pickFiles({ accept: 'video/*' }).then(async f => {
+      if (!f[0]) return;
+      try { await attachFileToClip(a.clip, f[0]); await commit(); refresh(); toast('Reconnected.'); }
+      catch (e) { messageSheet("That video wasn't saved", e.message); }
+    }) },
+    { label: 'Record a new answer', icon: I.video, fn: () => Rec.open(iv.id, [iv.answers.indexOf(a)]) },
+  ], { sub: a.text });
+}
+
+function answerMenu(iv, idx) {
+  const a = iv.answers[idx];
+  const has = a.clip && HAVE.has(a.clip.id);
+  const items = [];
+  if (has) items.push({ label: 'Play', icon: I.play, fn: () => { Player.unlock(); Player.single(iv, a); } });
+  items.push({ label: a.clip ? 'Record it again' : 'Record the answer', icon: I.video, fn: () => Rec.open(iv.id, [idx]) });
+  items.push({ label: a.clip ? 'Use a different video' : 'Choose a video', sub: 'From Photos or Files', icon: I.upload, fn: () => pickFiles({ accept: 'video/*' }).then(async f => {
+    if (!f[0]) return;
+    try { toast('Saving…'); await saveClipToAnswer(iv, idx, { blob: f[0], mime: f[0].type, name: f[0].name, source: 'library' }); refresh(); toast('Saved.'); }
+    catch (e) { messageSheet("That video wasn't saved", e.message); }
+  }) });
+  if (has) items.push({ label: 'Share or save this video', icon: I.share, fn: () => {
+    // file must be ready before the tap; fetch, then ask for a second tap
+    getVideo(a.clip.id).then(b => {
+      if (!b) return;
+      const file = new File([b], clipFileName(iv, idx), { type: baseType(a.clip.mime) });
+      sheet(`<h2>Share this answer</h2><p class="sub">${esc(a.text)}</p><button class="btn primary" data-go>${I.share}<span>Open the share sheet</span></button><button class="btn soft" data-close>Cancel</button>`, {
+        onMount(el, api) { $('[data-go]', el).addEventListener('click', () => { shareOrDownload([file]).then(() => { api.close(); }).catch(() => {}); }); },
+      });
+    });
+  } });
+  if (a.clip) items.push({ label: 'Remove this answer', danger: true, icon: I.trash, fn: () => confirmSheet({
+    title: 'Remove this answer?', sub: 'The video is deleted from this app. Copies saved to iCloud Drive or Photos stay there.', ok: 'Remove answer',
+    async onOk() { await delVideo(a.clip.id); await delImage(a.clip.thumb); a.clip = null; iv.updatedAt = Date.now(); await commit(); refresh(); },
+  }) });
+  if (!a.clip) items.push({ label: 'Take this question off this birthday', danger: true, icon: I.trash, fn: async () => { iv.answers.splice(idx, 1); iv.updatedAt = Date.now(); await commit(); refresh(); } });
+  actionSheet('', items, { sub: a.text, style: kidStyle(child(iv.childId)) });
+}
+
+function ivMenu(iv) {
+  const c = child(iv.childId);
+  actionSheet(`${c.name} at ${iv.age}`, [
+    { label: 'Edit the note and height', icon: I.pencil, fn: () => noteSheet(iv) },
+    { label: iv.cover ? 'Change the birthday photo' : 'Add a birthday photo', sub: 'Used as the cover for this birthday', icon: I.image, fn: () => pickFiles({ accept: 'image/*' }).then(async f => {
+      if (!f[0]) return;
+      try { const d = await imageToDataURL(f[0], 1000, 4 / 3); const id = 'cv-' + iv.id + '-' + uid(4); await putImage(id, d); if (iv.cover) await delImage(iv.cover); iv.cover = id; iv.updatedAt = Date.now(); await commit(); refresh(); }
+      catch { toast("That photo couldn't be opened."); }
+    }) },
+    { label: 'Change the date', icon: I.calendar, fn: () => dateSheet(iv) },
+    { label: 'Save the originals', icon: I.share, fn: () => saveSheet(iv) },
+    { label: 'Delete this birthday', danger: true, icon: I.trash, fn: () => confirmSheet({
+      title: `Delete ${c.name} at ${iv.age}?`, sub: `This removes ${plural(answeredCount(iv), 'video')} and the note from this app. Copies saved to iCloud Drive or Photos stay there.`, ok: 'Delete birthday',
+      async onOk() { await deleteInterviewData(iv); S.interviews = S.interviews.filter(x => x.id !== iv.id); await commit(); back(); refresh(); },
+    }) },
+  ]);
+}
+function dateSheet(iv) {
+  const c = child(iv.childId);
+  sheet(`<h2>Change the date</h2><p class="sub">The age updates to match.</p>
+    <label class="field"><span>Date of the interview</span><input class="input" type="date" id="ds-d" value="${iv.date}" min="${c.birthday}" max="${todayISO()}"></label>
+    <button class="btn primary" id="ds-s">Save</button><button class="btn soft" data-close>Cancel</button>`, {
+    onMount(el, api) { $('#ds-s', el).addEventListener('click', async () => { const v = $('#ds-d', el).value; if (!v) return; iv.date = v; iv.age = ageOn(c.birthday, v); iv.updatedAt = Date.now(); await commit(); api.close(); refresh(); }); },
+  });
+}
+function addQuestionToIv(iv) {
+  const c = child(iv.childId);
+  const unused = S.questions.filter(q => !q.archived && !iv.answers.some(a => a.qid === q.id));
+  sheet(`<h2>Add a question</h2><p class="sub">Only for ${esc(c.name)} at ${iv.age}, unless you ask it every year.</p>
+    ${unused.length ? `<div class="setup-q" style="margin-bottom:16px">${unused.map(q => `<div class="q-row"><button class="check" data-q="${q.id}">${I.check}</button><p class="q-text">${esc(q.text)}</p><span></span></div>`).join('')}</div>` : ''}
+    <label class="field"><span>Or write a new one</span><input class="input" id="aq-t" placeholder="Your question"></label>
+    <button class="toggle-line" id="aq-e"><span class="check">${I.check}</span><span>Ask it every year</span></button>
+    <button class="btn primary" id="aq-s">Add</button><button class="btn soft" data-close>Cancel</button>`, {
+    style: kidStyle(c),
+    onMount(el, api) {
+      const pick = new Set(); let every = false;
+      $$('.setup-q .check', el).forEach(b => b.addEventListener('click', () => { const id = b.dataset.q; pick.has(id) ? pick.delete(id) : pick.add(id); b.classList.toggle('on', pick.has(id)); }));
+      $('#aq-e', el).addEventListener('click', e => { every = !every; $('.check', e.currentTarget).classList.toggle('on', every); });
+      $('#aq-s', el).addEventListener('click', async () => {
+        for (const id of pick) { const q = question(id); iv.answers.push({ qid: q.id, text: q.text, who: q.who, clip: null }); }
+        const t = $('#aq-t', el).value.trim();
+        if (t) {
+          const qid = (every ? 'q-' : 'x-') + uid(6);
+          if (every) S.questions.push({ id: qid, text: t, short: t.slice(0, 28), nudge: '', who: 'child', active: true, archived: false, updatedAt: Date.now() });
+          iv.answers.push({ qid, text: t, who: 'child', clip: null });
+        }
+        iv.answers.sort((x, y) => (x.who === 'parent') - (y.who === 'parent'));
+        iv.updatedAt = Date.now(); await commit(); api.close(); refresh();
+      });
+    },
+  });
+}
+
+document.addEventListener('click', e => {
+  const el = e.target.closest('[data-act]');
+  if (!el || el.closest('.sheet')) return;
+  const fn = ACT[el.dataset.act];
+  if (fn) { e.preventDefault(); fn(el.dataset, el); }
+});
+
+/* =========================================================
+   Boot
+   ========================================================= */
+async function boot() {
+  try {
+    await loadAll();
+  } catch (e) {
+    document.getElementById('views').innerHTML = `<section class="view"><div class="welcome"><h1>Storage isn't available</h1><p class="lede">${esc(e.message || 'This browser blocked the app from storing anything.')} If you're in a private browsing window, open the app normally from your Home Screen.</p></div></section>`;
+    return;
+  }
+  resetTo('home');
+  if (S.children.length) ensurePersist();
+  // keep birthday banners current if the app stays open past midnight
+  let day = todayISO();
+  setInterval(() => { if (todayISO() !== day) { day = todayISO(); refresh(); } }, 60000);
+  window.addEventListener('pageshow', () => { if (todayISO() !== day) { day = todayISO(); refresh(); } });
+}
+// test hook (harmless in production)
+window.__btc = { get S() { return S; }, HAVE, IMG, ACT, Player, Rec };
+boot();
+})();
