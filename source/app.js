@@ -10,7 +10,7 @@
    ========================================================= */
 
 const APP_ID = 'birthday-time-capsule';
-const APP_VERSION = '1.0';
+const APP_VERSION = '1.1';
 const DB_NAME = 'birthday-time-capsule';
 
 /* ---------- small helpers */
@@ -79,6 +79,7 @@ const I = {
   link: sv('<path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/>'),
   phone: sv('<rect x="6.5" y="2.5" width="11" height="19" rx="2.5"/><path d="M10.5 18.5h3"/>'),
   info: sv('<circle cx="12" cy="12" r="9"/><path d="M12 11v5.5M12 7.6v.2"/>'),
+  help: sv('<circle cx="12" cy="12" r="9"/><path d="M9.6 9.4a2.5 2.5 0 1 1 3.6 2.2c-.8.5-1.2 1-1.2 1.9M12 16.6v.2"/>'),
   share: sv('<path d="M12 15V3.5M7.5 8L12 3.5 16.5 8"/><path d="M6 11H5v9.5h14V11h-1"/>'),
   doc: sv('<path d="M6 3h8l4 4v14H6z"/><path d="M14 3v4h4"/>'),
   missing: sv('<path d="M3 3l18 18"/><path d="M8.5 6H14a2 2 0 0 1 2 2v3l5-3v9M16 16v.5A2.5 2.5 0 0 1 13.5 19H5.5A2.5 2.5 0 0 1 3 16.5v-8A2.5 2.5 0 0 1 5 6"/>'),
@@ -116,7 +117,6 @@ const DEFAULT_QUESTIONS = [
   ['q-proud',   'What are you proud of?', 'Proud of', 'Something you learned to do this year.'],
   ['q-excited', 'What are you excited about this year?', 'Excited about', 'Something you want to try for the first time?'],
   ['q-future',  'What do you want to tell grown-up you?', 'To grown-up me', 'Grown-up you is going to watch this someday.'],
-  ['q-parent',  'A message from Mom and Dad', 'From Mom and Dad', 'Turn the camera around. Tell {name} what you love about this age.', 'parent'],
   ['q-color',   "What's your favorite color?", 'Favorite color', 'Why that one?', 'child', false],
   ['q-memory',  "What's your favorite memory from this year?", 'Favorite memory', 'Where were you? Who was there?', 'child', false],
   ['q-happy',   'What makes you really happy?', 'Makes me happy', 'And what makes you grumpy?', 'child', false],
@@ -424,7 +424,7 @@ function toast(msg, ms = 2600) {
 }
 
 const layer = () => $('#layer');
-function sheet(html, { onMount, style = '', cls = '' } = {}) {
+function sheet(html, { onMount, style = '', cls = '', onClose } = {}) {
   const wrap = document.createElement('div');
   wrap.innerHTML = `<div class="scrim"></div><div class="sheet ${cls}" role="dialog" aria-modal="true" style="${style}"><div class="grabber"></div>${html}</div>`;
   const scrim = wrap.firstElementChild, el = wrap.lastElementChild;
@@ -434,6 +434,7 @@ function sheet(html, { onMount, style = '', cls = '' } = {}) {
     el,
     close() {
       if (closed) return; closed = true;
+      if (onClose) { try { onClose(); } catch {} }
       el.classList.remove('in'); scrim.classList.remove('in');
       setTimeout(() => { el.remove(); scrim.remove(); }, 420);
     },
@@ -555,7 +556,8 @@ VIEWS.welcome = () => `
     <p class="lede">Ask the same questions every birthday. Years from now, watch the answers change.</p>
     <button class="btn primary" data-act="add-child">Add your first child</button>
     <button class="btn soft" data-act="restore">Restore from a backup file</button>
-    <p class="fine">No accounts. Everything stays on this iPhone and in your own iCloud.</p>
+    <button class="text-btn" style="display:block;margin:12px auto 0" data-act="guide">How it works</button>
+    <p class="fine">No accounts. Everything stays on this iPhone and in your own cloud storage.</p>
   </div>`;
 
 VIEWS.home = () => {
@@ -565,7 +567,7 @@ VIEWS.home = () => {
   let h = `<header class="home-head">
       <div><p class="today">${esc(now.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' }))}</p>
       <h1 class="app-title">Birthday Time Capsule</h1></div>
-      <button class="icon-btn" data-act="settings" aria-label="Settings">${I.gear}</button>
+      <div style="display:flex;flex:none"><button class="icon-btn" data-act="guide" aria-label="How it works">${I.help}</button><button class="icon-btn" data-act="settings" aria-label="Settings">${I.gear}</button></div>
     </header>`;
   if (IOS && !STANDALONE) {
     h += `<div class="quiet" style="margin:-6px 0 22px">${I.phone}<p><b>Open this from your Home Screen.</b> Safari and the Home Screen app keep separate storage, so record from the Home Screen icon. In Safari, tap Share, then Add to Home Screen.</p></div>`;
@@ -631,11 +633,11 @@ function homeFooter() {
   const missing = missingClips().length;
   let h = '';
   if (unsaved) {
-    h += `<div class="quiet">${I.cloud}<p><b>${plural(unsaved, 'video is', 'videos are')} only on this iPhone.</b> <button class="link" data-act="backup">Save to iCloud Drive</button></p></div>`;
+    h += `<div class="quiet">${I.cloud}<p><b>${plural(unsaved, 'video is', 'videos are')} only on this iPhone.</b> <button class="link" data-act="backup">Save to Files</button></p></div>`;
   } else if (clips.length && S.settings.lastChangeAt > S.settings.lastBackupAt + 1000) {
     h += `<div class="quiet">${I.doc}<p>Notes or questions changed since your last backup file. <button class="link" data-act="backup">Back up</button></p></div>`;
   } else if (clips.length && !missing) {
-    h += `<div class="quiet">${I.check}<p>Every video has been saved to iCloud Drive.</p></div>`;
+    h += `<div class="quiet">${I.check}<p>Every video has been saved to Files.</p></div>`;
   }
   if (missing) h += `<div class="quiet">${I.missing}<p>${plural(missing, 'video needs', 'videos need')} reconnecting. <button class="link" data-act="backup">Reconnect</button></p></div>`;
   return h;
@@ -739,7 +741,7 @@ VIEWS.interview = ({ id }) => {
     else meta = a.who === 'parent' ? 'For Mom and Dad' : 'Not answered yet';
     h += `<div class="ans">
         <button class="ans-thumb ${a.clip ? (gone ? 'gone' : '') : 'add'}" data-act="answer" data-id="${iv.id}" data-i="${idx}" aria-label="${has ? 'Play' : 'Add a video'}">${has && th ? `<img src="${th}" alt="">` : gone ? I.missing : has ? '' : I.plus}</button>
-        <button class="ans-text" data-act="answer" data-id="${iv.id}" data-i="${idx}"><p class="ans-q">${esc(a.text)}</p><p class="ans-meta ${gone ? 'warn' : ''}">${meta}</p></button>
+        <button class="ans-text" data-act="answer" data-id="${iv.id}" data-i="${idx}"><p class="ans-q">${esc(a.text)}</p><p class="ans-meta ${gone ? 'warn' : ''}">${meta}</p>${a.transcript ? `<p class="ans-tr">${esc(a.transcript)}</p>` : ''}</button>
         <button class="icon-btn" data-act="answer-menu" data-id="${iv.id}" data-i="${idx}" aria-label="Options for this answer">${I.more}</button>
       </div>`;
   });
@@ -752,7 +754,7 @@ VIEWS.interview = ({ id }) => {
   if (withVid.length) {
     const sf = withVid.filter(a => a.clip.savedFiles).length, sp = withVid.filter(a => a.clip.savedPhotos).length;
     h += `<h2 class="section-title">Kept safe</h2><div class="kept">
-      <div class="kept-row ${sf === withVid.length ? 'ok' : ''}">${I.cloud}<div><p class="k-title">iCloud Drive</p><p class="k-sub">${sf === withVid.length ? 'All originals saved' : sf ? `${sf} of ${withVid.length} saved` : 'Not saved yet'}</p></div>${sf === withVid.length ? I.check : ''}</div>
+      <div class="kept-row ${sf === withVid.length ? 'ok' : ''}">${I.cloud}<div><p class="k-title">Files (Google Drive or iCloud)</p><p class="k-sub">${sf === withVid.length ? 'All originals saved' : sf ? `${sf} of ${withVid.length} saved` : 'Not saved yet'}</p></div>${sf === withVid.length ? I.check : ''}</div>
       <div class="kept-row ${sp === withVid.length ? 'ok' : ''}">${I.photos}<div><p class="k-title">Photos</p><p class="k-sub">${sp === withVid.length ? 'All originals saved' : sp ? `${sp} of ${withVid.length} saved` : 'Not saved yet'}</p></div>${sp === withVid.length ? I.check : ''}</div>
       </div>
       <button class="btn soft" style="margin-top:16px" data-act="save-iv" data-id="${iv.id}">${I.share}<span>Save the originals</span></button>`;
@@ -817,9 +819,10 @@ VIEWS.settings = () => {
   for (const c of S.children) h += `<button class="row" data-act="edit-child" data-id="${c.id}" style="${kidStyle(c)}"><span class="mini-avatar">${avatarHTML(c)}</span><span><p class="r-title">${esc(c.name)}</p><p class="r-sub">Born ${esc(fmtDate(c.birthday))}</p></span><span class="chev">${I.chev}</span></button>`;
   h += `<button class="row" data-act="add-child"><span class="r-ic">${I.plus}</span><span class="r-title">Add a child</span><span></span></button></div>
     <h2 class="section-title">Capsule</h2><div class="list">
+    <button class="row" data-act="guide"><span class="r-ic">${I.help}</span><span><p class="r-title">How it works</p><p class="r-sub">Steps and features</p></span><span class="chev">${I.chev}</span></button>
     <button class="row" data-act="questions"><span class="r-ic">${I.list}</span><span><p class="r-title">Questions</p><p class="r-sub">${S.questions.filter(q => q.active && !q.archived).length} asked each year</p></span><span class="chev">${I.chev}</span></button>
     <button class="row" data-act="backup"><span class="r-ic">${I.cloud}</span><span><p class="r-title">Backup and restore</p><p class="r-sub">${S.settings.lastBackupAt ? `Last backup file ${esc(new Date(S.settings.lastBackupAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }))}` : 'No backup file yet'}</p></span><span class="chev">${I.chev}</span></button>
-    <button class="row" data-act="about"><span class="r-ic">${I.info}</span><span><p class="r-title">Where your videos live</p><p class="r-sub">How storage and iCloud work here</p></span><span class="chev">${I.chev}</span></button>
+    <button class="row" data-act="about"><span class="r-ic">${I.info}</span><span><p class="r-title">Where your videos live</p><p class="r-sub">How storage and backups work here</p></span><span class="chev">${I.chev}</span></button>
     </div>
     <h2 class="section-title">This iPhone</h2><div id="storage-stats" class="list"><div class="stat-line"><span>Checking storage…</span><span></span></div></div>
     <p class="hint" style="margin-top:26px">Birthday Time Capsule ${APP_VERSION}</p>`;
@@ -869,10 +872,10 @@ VIEWS.backup = () => {
   for (const x of unsaved) { if (!byIv.has(x.iv.id)) byIv.set(x.iv.id, []); byIv.get(x.iv.id).push(x); }
   let h = `<div class="bar"><button class="back" data-act="back">${I.back}<span>Back</span></button><span></span></div>
     <h1 class="page-title">Backup and restore</h1>
-    <p class="page-lede">Your originals belong in iCloud Drive. The backup file remembers everything else: questions, notes, heights, and which video goes with which answer.</p>
+    <p class="page-lede">Your originals belong in your cloud folder, in Google Drive or iCloud Drive. The backup file remembers everything else: questions, notes, heights, and which video goes with which answer.</p>
     <h2 class="section-title">Videos</h2>`;
   if (!allClips().length) h += `<p class="empty">No videos yet.</p>`;
-  else if (!unsaved.length) h += `<div class="kept"><div class="kept-row ok">${I.cloud}<div><p class="k-title">Every video is saved to iCloud Drive</p><p class="k-sub">${plural(allClips().length, 'video')} across ${plural(S.interviews.filter(i => answeredCount(i)).length, 'birthday')}</p></div>${I.check}</div></div>`;
+  else if (!unsaved.length) h += `<div class="kept"><div class="kept-row ok">${I.cloud}<div><p class="k-title">Every video is saved to Files</p><p class="k-sub">${plural(allClips().length, 'video')} across ${plural(S.interviews.filter(i => answeredCount(i)).length, 'birthday')}</p></div>${I.check}</div></div>`;
   else {
     h += `<p class="page-lede">${plural(unsaved.length, 'video is', 'videos are')} only on this iPhone. Save each birthday below.</p><div class="list">`;
     for (const [ivId, xs] of byIv) {
@@ -882,15 +885,68 @@ VIEWS.backup = () => {
     h += `</div>`;
   }
   h += `<h2 class="section-title">Backup file</h2>
-    <p class="page-lede">${S.settings.lastBackupAt ? `Last saved ${esc(new Date(S.settings.lastBackupAt).toLocaleString(undefined, { month: 'long', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' }))}.` : 'Not saved yet.'} It also goes along automatically whenever you save videos to iCloud Drive.</p>
+    <p class="page-lede">${S.settings.lastBackupAt ? `Last saved ${esc(new Date(S.settings.lastBackupAt).toLocaleString(undefined, { month: 'long', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' }))}.` : 'Not saved yet.'} It also goes along automatically whenever you save videos to Files.</p>
     <button class="btn primary" data-act="save-backup">${I.doc}<span>Save the backup file</span></button>
     <h2 class="section-title">Restore on this iPhone</h2>
-    <p class="page-lede">On a new phone: restore the newest backup file first, then reconnect the videos from your iCloud Drive folder. You can select them all at once.</p>
+    <p class="page-lede">On a new phone: restore the newest backup file first, then reconnect the videos from your cloud folder. You can select them all at once.</p>
     <button class="btn soft" data-act="restore">${I.upload}<span>Restore from a backup file</span></button>
     <button class="btn soft" data-act="reconnect">${I.link}<span>Reconnect videos</span></button>`;
   if (missing.length) h += `<p class="hint" style="margin-top:12px">${plural(missing.length, 'video is', 'videos are')} listed in the capsule but not on this iPhone yet.</p>`;
   return h;
 };
+
+VIEWS.guide = () => `
+  <div class="bar"><button class="back" data-act="back">${I.back}<span>Back</span></button><span></span></div>
+  <h1 class="page-title">How it works</h1>
+  <p class="page-lede">One interview a year, the same questions each time, kept safe and easy to replay. Start with the first section. The rest are here when you need them.</p>
+  <div class="guide">
+    <details open><summary>Set up once</summary><div class="prose">
+      <ol>
+        <li>Add each child with a photo, name, and birthday. Ages work out from the birthday.</li>
+        <li>Open the app in Safari, tap Share, then Add to Home Screen. From then on, <b>always open it from that icon.</b> Safari and the Home Screen app keep separate storage.</li>
+        <li>Allow the camera and microphone the first time you record.</li>
+        <li>Do a practice run: record two answers, save them to Files, then open the Files app and check the folder.</li>
+      </ol></div></details>
+    <details><summary>Interview day</summary><div class="prose">
+      <ol>
+        <li>Open the app. For three weeks after a birthday, a button for that child appears on the home screen. Tap it, or open the child and tap Record the birthday interview.</li>
+        <li>Check the date and the questions, then tap Start the interview. Questions come one at a time.</li>
+        <li>Read the question out loud. Tap the red button to record and tap it again to stop. The answer plays back right away.</li>
+        <li>Tap Keep and next, or Try again. Skip leaves a question for later.</li>
+        <li>Already filmed something? Tap Video at the bottom left to choose it from Photos or Files, or record with the Camera app.</li>
+        <li>On the last question you reach the finish screen. Tap each save button to send the originals to Files and Photos. Then add a note and a height.</li>
+      </ol>
+      <p>If you stop partway, open that birthday and tap Continue the interview. While recording, tap the Last year button to let your child see or hear last year's answer first.</p></div></details>
+    <details><summary>Watching</summary><div class="prose">
+      <p><b>Play the interview.</b> On a birthday page, tap Play the interview. You'll see a title card with your note, then every answer in order. Tap the left edge to go back, the right edge to skip, the middle to pause.</p>
+      <p><b>One answer.</b> Tap any answer in the list to watch just that one.</p>
+      <p><b>Watch Me Grow.</b> Open it from the home screen or a child's page. Choose a child (or Together for both), then a question. You'll see that question's answer from every birthday, youngest to oldest, with a large age card before each.</p>
+      <p><b>Candles.</b> Each child has one candle per year of age. It lights up for every birthday that has an interview.</p></div></details>
+    <details><summary>Questions</summary><div class="prose">
+      <p>Open Settings, then Questions. Check or uncheck a question to include it in every birthday. Reorder changes the order. The plus adds your own.</p>
+      <p>Tap a question to edit its wording. An edited question stays connected to past answers, but keep the wording steady so answers line up in Watch Me Grow.</p>
+      <p>Retiring a question stops asking it and keeps every past answer. For something that only fits one year, use A question just for this year when you start an interview, or Add a question to this birthday on the birthday page.</p></div></details>
+    <details><summary>Words (transcripts)</summary><div class="prose">
+      <p>The app doesn't write transcripts for you. To add the words to an answer, tap the three dots beside it and choose Add the words. A small player in the same sheet lets you listen while you type. You can also tap the microphone on the iPhone keyboard and dictate.</p>
+      <p>The words show under the answer and appear on screen while the video plays. They're saved in the backup file along with your notes.</p></div></details>
+    <details><summary>Keeping videos safe</summary><div class="prose">
+      <p>Videos are stored inside the app so they play instantly, but <b>that is not a backup.</b> The real backup is the copy you send to Files.</p>
+      <ol>
+        <li>After each interview, tap Save to Files. In the share sheet, choose Save to Files or Drive, then your Birthday Time Capsule folder in Google Drive or iCloud Drive. The backup file goes along.</li>
+        <li>Tap Save to Photos for a second copy.</li>
+        <li>A checkmark means the share sheet finished. The app can't look inside your cloud folder, so check it in the Files app now and then.</li>
+        <li>Once a year, reconnect one video from the folder to prove it still works.</li>
+      </ol>
+      <p><b>New phone:</b> add the app to the Home Screen, choose Restore from a backup file, then Reconnect videos and select everything in the folder.</p></div></details>
+    <details><summary>Good to know</summary><div class="prose">
+      <p>Phones don't sync with each other. Each phone restores the backup file and reconnects the videos once.</p>
+      <p>Don't clear Safari website data, and don't delete the Home Screen icon, until everything is saved to Files.</p>
+      <p>Settings shows how much space the videos use on this iPhone.</p></div></details>
+  </div>
+  <div class="list" style="margin-top:28px">
+    <button class="row" data-act="backup"><span class="r-ic">${I.cloud}</span><span class="r-title">Backup and restore</span><span class="chev">${I.chev}</span></button>
+    <button class="row" data-act="about"><span class="r-ic">${I.info}</span><span class="r-title">Where your videos live</span><span class="chev">${I.chev}</span></button>
+  </div>`;
 
 VIEWS.about = () => `
   <div class="bar"><button class="back" data-act="back">${I.back}<span>Back</span></button><span></span></div>
@@ -900,17 +956,17 @@ VIEWS.about = () => `
     <h3>1. Inside the app, on this iPhone</h3>
     <p>Every video you keep is stored in the app's private storage so it plays instantly. Opened from the Home Screen, iOS doesn't wipe it after a week away the way it can for Safari tabs. Still, <b>it is not a backup.</b> It can be lost if you remove the Home Screen icon, clear website data, move to a new phone, or the iPhone runs critically low on space, and an iPhone backup isn't guaranteed to bring it back.</p>
     <p>Safari and the Home Screen app keep separate storage. Always record from the Home Screen icon.</p>
-    <h3>2. iCloud Drive: your main backup</h3>
-    <p>Web apps on iPhone are not allowed to write to iCloud on their own. When you tap <b>Save to iCloud Drive</b>, the iPhone share sheet opens. Choose <b>Save to Files</b>, then your <b>Birthday Time Capsule</b> folder in iCloud Drive. The backup file is saved in the same step.</p>
+    <h3>2. Files: your main backup</h3>
+    <p>Web apps on iPhone are not allowed to write to your cloud storage on their own. When you tap <b>Save to Files</b>, the iPhone share sheet opens. Choose <b>Save to Files</b> or the <b>Drive</b> app, then your <b>Birthday Time Capsule</b> folder in Google Drive or iCloud Drive. The backup file is saved in the same step.</p>
     <p>Each video's file name ends with a short code like [btc-k3f9a2m7]. That code is how the app matches a file back to the right answer later.</p>
     <h3>3. Photos: a second copy</h3>
     <p><b>Save to Photos</b> opens the same share sheet. Choose <b>Save Videos</b>. iCloud Photos keeps them, and they're easy to share with family. Photos doesn't keep file names, so if you ever reconnect from Photos, it's one answer at a time.</p>
     <h3>4. Moving to a new phone</h3>
     <ol><li>Add the app to the new phone's Home Screen and open it from there.</li>
-    <li>Choose Restore from a backup file and pick the newest one in your iCloud Drive folder.</li>
+    <li>Choose Restore from a backup file and pick the newest one in your cloud folder.</li>
     <li>Choose Reconnect videos and select all the videos in that folder.</li></ol>
     <h3>5. What the checkmarks mean</h3>
-    <p>The app marks a video as saved when the share sheet reports that it finished. It can't look inside iCloud, so if you're unsure, open the Files app and check the folder.</p>
+    <p>The app marks a video as saved when the share sheet reports that it finished. It can't look inside Google Drive or iCloud, so if you're unsure, open the Files app and check the folder.</p>
     <h3>Two phones</h3>
     <p>Each phone keeps its own copy. Restoring the newest backup file and reconnecting videos brings the other phone up to date.</p>
   </div>`;
@@ -966,7 +1022,7 @@ function childForm(c, { onDone } = {}) {
         const ivs = S.interviews.filter(i => i.childId === c.id);
         const vids = ivs.reduce((n, i) => n + answeredCount(i), 0);
         api.close();
-        confirmSheet({ title: `Remove ${c.name}?`, sub: `This removes ${plural(ivs.length, 'birthday')} and ${plural(vids, 'video')} from this app. Anything you saved to iCloud Drive or Photos stays there.`, ok: `Remove ${c.name}`,
+        confirmSheet({ title: `Remove ${c.name}?`, sub: `This removes ${plural(ivs.length, 'birthday')} and ${plural(vids, 'video')} from this app. Anything you saved to Files or Photos stays there.`, ok: `Remove ${c.name}`,
           async onOk() {
             for (const iv of ivs) await deleteInterviewData(iv);
             S.interviews = S.interviews.filter(i => i.childId !== c.id);
@@ -996,8 +1052,8 @@ function maybeStorageIntro() {
 function storageIntro() {
   // stacked under "add another" so it appears once that closes
   sheet(`<h2>Before you record</h2>
-    <p class="sub">Videos are stored inside this app so they play instantly, but the app can't put them in iCloud by itself.</p>
-    <div class="prose" style="font-size:15px"><p><b>After each interview, tap Save to iCloud Drive.</b> In the share sheet choose Save to Files, then a folder named Birthday Time Capsule. That's your real backup, and the app's backup file goes with it.</p>
+    <p class="sub">Videos are stored inside this app so they play instantly, but the app can't put them in your cloud storage by itself.</p>
+    <div class="prose" style="font-size:15px"><p><b>After each interview, tap Save to Files.</b> In the share sheet choose Save to Files (or Drive), then a folder named Birthday Time Capsule in Google Drive or iCloud Drive. That's your real backup, and the app's backup file goes with it.</p>
     <p><b>Save to Photos</b> adds a second copy to your library.</p>
     ${IOS && !STANDALONE ? `<p><b>Add this app to your Home Screen first</b> (Share, then Add to Home Screen) and record from there. Safari and the Home Screen app don't share storage.</p>` : ''}</div>
     <button class="btn primary" data-close>Got it</button>`);
@@ -1138,7 +1194,7 @@ function mountSavePanel(host, iv) {
     const sf = all.length && all.every(a => a.clip.savedFiles), sp = all.length && all.every(a => a.clip.savedPhotos);
     host.innerHTML = `
       <button class="save-opt" data-dest="files" ${busy || !state.files ? 'disabled' : ''}><span class="ic">${I.cloud}</span>
-        <span><b>${sf ? 'Saved to iCloud Drive' : 'Save to iCloud Drive'}</b><small>${state.files ? `Choose Save to Files, then your Birthday Time Capsule folder. ${plural(state.files.length, 'video')} plus the backup file.` : 'Getting the videos ready…'}</small></span>
+        <span><b>${sf ? 'Saved to Files' : 'Save to Files'}</b><small>${state.files ? `Choose Save to Files or Drive, then your Birthday Time Capsule folder. ${plural(state.files.length, 'video')} plus the backup file.` : 'Getting the videos ready…'}</small></span>
         <span class="st">${sf ? I.check : !state.files ? '<span class="spinner"></span>' : ''}</span></button>
       <button class="save-opt" data-dest="photos" ${busy || !state.photos || !state.photos.length ? 'disabled' : ''}><span class="ic">${I.photos}</span>
         <span><b>${sp ? 'Saved to Photos' : 'Save to Photos'}</b><small>${state.photos ? (state.photos.length ? `Choose Save ${state.photos.length === 1 ? 'Video' : `${state.photos.length} Videos`}.` : 'These videos can’t go to Photos.') : 'Getting the videos ready…'}</small></span>
@@ -1195,6 +1251,7 @@ async function saveClipToAnswer(iv, idx, p) {
   if (!thumb || !duration) { const t = await thumbFromBlob(p.blob); thumb = thumb || t.thumb; duration = duration || t.duration; }
   let thumbId = null;
   if (thumb) { thumbId = 't-' + id; await putImage(thumbId, thumb); }
+  if (old) a.transcript = '';
   a.clip = { id, mime: baseType(p.mime || p.blob.type, p.name), size: p.blob.size, duration: duration || 0, thumb: thumbId, source: p.source, at: Date.now(), savedFiles: 0, savedPhotos: 0 };
   iv.updatedAt = Date.now();
   await commit();
@@ -1501,7 +1558,7 @@ const Finish = {
       <h1>${esc(c.name)} at ${iv.age} is in the capsule.</h1>
       <p class="lede">${plural(n, 'answer is', 'answers are')} saved on this iPhone${n < iv.answers.length ? `, with ${iv.answers.length - n} left to record whenever you like` : ''}.</p>
       <h2>Now keep the originals safe</h2>
-      <p class="why">This app can't reach iCloud on its own. Each button opens the share sheet; pick the option it names.</p>
+      <p class="why">This app can't reach your cloud storage on its own. Each button opens the share sheet; pick the option it names.</p>
       <div id="fin-save"></div>
       <div class="done-row">
         <button class="btn soft" id="fin-note">${I.pencil}<span>Add a note about today</span></button>
@@ -1565,7 +1622,7 @@ const Player = {
     el.className = 'player';
     el.innerHTML = `<video playsinline preload="auto"></video>
       <div class="p-tap"><button data-p="prev" aria-label="Previous"></button><button data-p="toggle" aria-label="Pause or play"></button><button data-p="next" aria-label="Next"></button></div>
-      <div class="p-cap hide"><b></b><span></span></div>
+      <div class="p-cap hide"><b></b><span></span><em></em></div>
       <div class="p-paused"><span>${I.pause}</span></div>
       <div class="p-card"></div>
       <div class="p-top"><div class="p-bars"></div><button class="icon-btn" data-p="close" aria-label="Close">${I.close}</button></div>
@@ -1641,11 +1698,11 @@ const Player = {
     if (this.v.getAttribute('src') !== u) this.v.src = u;
     this.el.setAttribute('style', it.style || this.el.getAttribute('style') || '');
     const cap = $('.p-cap', this.el);
-    $('b', cap).textContent = it.capTitle || ''; $('span', cap).textContent = it.capSub || '';
+    $('b', cap).textContent = it.capTitle || ''; $('span', cap).textContent = it.capSub || ''; $('em', cap).textContent = it.capText || '';
     this.hideCard();
     try {
       await this.v.play();
-      if (it.capTitle) { cap.classList.remove('hide'); setTimeout(() => { if (tk === this.token) cap.classList.add('hide'); }, 3200); }
+      if (it.capTitle) { cap.classList.remove('hide'); setTimeout(() => { if (tk === this.token) cap.classList.add('hide'); }, it.capText ? 9000 : 3200); }
     } catch (e) {
       if (tk === this.token) this.el.classList.add('need-tap');
     }
@@ -1695,14 +1752,14 @@ const Player = {
     const items = [{ card: `${candlesHTML(c, 'lg')}<p class="c-title">${esc(c.name)} at ${iv.age}</p><p class="c-l2">${esc(fmtDate(iv.date, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' }))}</p>${iv.note ? `<p class="c-note">${esc(iv.note)}</p>` : ''}`, dur: iv.note ? 4200 : 2800, style: st }];
     iv.answers.forEach((a, n) => {
       if (!a.clip) return;
-      items.push({ card: `<p class="c-qbig">${esc(a.text)}</p>`, dur: 2100, clipId: a.clip.id, style: st, capTitle: `${c.name} at ${iv.age}`, capSub: a.text });
+      items.push({ card: `<p class="c-qbig">${esc(a.text)}</p>`, dur: 2100, clipId: a.clip.id, style: st, capTitle: `${c.name} at ${iv.age}`, capSub: a.text, capText: a.transcript });
     });
     this.open(items, { style: st, endHTML: `<p class="c-title">Happy ${ordinal(iv.age)} birthday, ${esc(c.name)}.</p>` });
   },
   single(iv, a) {
     const c = child(iv.childId);
     const st = kidStyle(c);
-    this.open([{ card: `<p class="c-q">${esc(a.text)}</p><p class="c-l1" style="margin-top:14px">${esc(c.name)} at ${iv.age}</p>`, dur: 1400, clipId: a.clip.id, style: st, capTitle: `${c.name} at ${iv.age}`, capSub: a.text }], { style: st });
+    this.open([{ card: `<p class="c-q">${esc(a.text)}</p><p class="c-l1" style="margin-top:14px">${esc(c.name)} at ${iv.age}</p>`, dur: 1400, clipId: a.clip.id, style: st, capTitle: `${c.name} at ${iv.age}`, capSub: a.text, capText: a.transcript }], { style: st });
   },
   grow(qid, who) {
     const kids = who === 'all' ? S.children : S.children.filter(k => k.id === who);
@@ -1724,7 +1781,7 @@ const Player = {
       const st = kidStyle(f.c);
       items.push({
         card: `<p class="c-q">${esc(f.a.text)}</p><p class="c-big">${f.iv.age}</p><p class="c-l1">${who === 'all' ? `${esc(f.c.name)} at ${f.iv.age}` : `Age ${f.iv.age}`}</p><p class="c-l2">${esc(fmtMonthYear(f.iv.date))}</p>`,
-        dur: 2500, clipId: f.a.clip.id, style: st, capTitle: `${f.c.name} at ${f.iv.age}`, capSub: fmtMonthYear(f.iv.date),
+        dur: 2500, clipId: f.a.clip.id, style: st, capTitle: `${f.c.name} at ${f.iv.age}`, capSub: fmtMonthYear(f.iv.date), capText: f.a.transcript,
       });
     }
     const endHTML = lo !== hi
@@ -1789,6 +1846,7 @@ const ACT = {
   questions: () => go('questions'),
   backup: () => go('backup'),
   about: () => go('about'),
+  guide: () => go('guide'),
   child: d => go('child', { id: d.id }),
   interview: d => go('interview', { id: d.id }),
   'add-child': () => childForm(),
@@ -1829,7 +1887,7 @@ const ACT = {
         const r = await restoreFrom(f[0]);
         if (stack[0].name === 'home') resetTo('home');
         refresh();
-        sheet(`<h2>Backup restored</h2><p class="sub">${plural(r.kids, 'child', 'children')} and ${plural(r.ivs, 'birthday')} added. ${r.missing ? `${plural(r.missing, 'video needs', 'videos need')} reconnecting from your iCloud Drive folder.` : 'All videos are on this iPhone.'}</p>
+        sheet(`<h2>Backup restored</h2><p class="sub">${plural(r.kids, 'child', 'children')} and ${plural(r.ivs, 'birthday')} added. ${r.missing ? `${plural(r.missing, 'video needs', 'videos need')} reconnecting from your cloud folder.` : 'All videos are on this iPhone.'}</p>
           ${r.missing ? `<button class="btn primary" data-rc>${I.link}<span>Reconnect videos</span></button>` : ''}<button class="btn soft" data-close>Done</button>`,
           { onMount(el, api) { const b = $('[data-rc]', el); if (b) b.addEventListener('click', () => { api.close(); ACT.reconnect(); }); } });
       } catch (e) { messageSheet("That backup couldn't be restored", e.message); }
@@ -1864,7 +1922,7 @@ const ACT = {
 
 function reconnectOne(iv, a) {
   actionSheet('Reconnect this video', [
-    { label: 'Choose the video', sub: 'From your iCloud Drive folder or Photos', icon: I.link, fn: () => pickFiles({ accept: 'video/*' }).then(async f => {
+    { label: 'Choose the video', sub: 'From your cloud folder or Photos', icon: I.link, fn: () => pickFiles({ accept: 'video/*' }).then(async f => {
       if (!f[0]) return;
       try { await attachFileToClip(a.clip, f[0]); await commit(); refresh(); toast('Reconnected.'); }
       catch (e) { messageSheet("That video wasn't saved", e.message); }
@@ -1878,6 +1936,7 @@ function answerMenu(iv, idx) {
   const has = a.clip && HAVE.has(a.clip.id);
   const items = [];
   if (has) items.push({ label: 'Play', icon: I.play, fn: () => { Player.unlock(); Player.single(iv, a); } });
+  if (a.clip) items.push({ label: a.transcript ? 'Edit the words' : 'Add the words', sub: 'Type or dictate what was said', icon: I.pencil, fn: () => transcriptSheet(iv, idx) });
   items.push({ label: a.clip ? 'Record it again' : 'Record the answer', icon: I.video, fn: () => Rec.open(iv.id, [idx]) });
   items.push({ label: a.clip ? 'Use a different video' : 'Choose a video', sub: 'From Photos or Files', icon: I.upload, fn: () => pickFiles({ accept: 'video/*' }).then(async f => {
     if (!f[0]) return;
@@ -1895,11 +1954,36 @@ function answerMenu(iv, idx) {
     });
   } });
   if (a.clip) items.push({ label: 'Remove this answer', danger: true, icon: I.trash, fn: () => confirmSheet({
-    title: 'Remove this answer?', sub: 'The video is deleted from this app. Copies saved to iCloud Drive or Photos stay there.', ok: 'Remove answer',
-    async onOk() { await delVideo(a.clip.id); await delImage(a.clip.thumb); a.clip = null; iv.updatedAt = Date.now(); await commit(); refresh(); },
+    title: 'Remove this answer?', sub: 'The video is deleted from this app. Copies saved to Files or Photos stay there.', ok: 'Remove answer',
+    async onOk() { await delVideo(a.clip.id); await delImage(a.clip.thumb); a.clip = null; a.transcript = ''; iv.updatedAt = Date.now(); await commit(); refresh(); },
   }) });
   if (!a.clip) items.push({ label: 'Take this question off this birthday', danger: true, icon: I.trash, fn: async () => { iv.answers.splice(idx, 1); iv.updatedAt = Date.now(); await commit(); refresh(); } });
   actionSheet('', items, { sub: a.text, style: kidStyle(child(iv.childId)) });
+}
+
+function transcriptSheet(iv, idx) {
+  const a = iv.answers[idx], c = child(iv.childId);
+  const has = a.clip && HAVE.has(a.clip.id);
+  let url = null, closed = false;
+  sheet(`<h2>The words</h2><p class="sub">${esc(a.text)}</p>
+    <div id="ts-vid"></div>
+    <label class="field"><span>What ${esc(c.name)} said</span><textarea class="input" id="ts-text" style="min-height:130px" placeholder="Type it, or tap the microphone on the keyboard to dictate">${esc(a.transcript || '')}</textarea></label>
+    <button class="btn primary" id="ts-save">Save</button><button class="btn soft" data-close>Cancel</button>`, {
+    style: kidStyle(c),
+    onClose() { closed = true; if (url) URL.revokeObjectURL(url); },
+    onMount(el, api) {
+      if (has) getVideo(a.clip.id).then(b => {
+        if (!b || closed) return;
+        url = URL.createObjectURL(b);
+        $('#ts-vid', el).innerHTML = `<video class="ts-video" src="${url}" controls playsinline preload="metadata"></video>`;
+      });
+      $('#ts-save', el).addEventListener('click', async () => {
+        a.transcript = $('#ts-text', el).value.trim();
+        iv.updatedAt = Date.now();
+        await commit(); api.close(); refresh();
+      });
+    },
+  });
 }
 
 function ivMenu(iv) {
@@ -1914,7 +1998,7 @@ function ivMenu(iv) {
     { label: 'Change the date', icon: I.calendar, fn: () => dateSheet(iv) },
     { label: 'Save the originals', icon: I.share, fn: () => saveSheet(iv) },
     { label: 'Delete this birthday', danger: true, icon: I.trash, fn: () => confirmSheet({
-      title: `Delete ${c.name} at ${iv.age}?`, sub: `This removes ${plural(answeredCount(iv), 'video')} and the note from this app. Copies saved to iCloud Drive or Photos stay there.`, ok: 'Delete birthday',
+      title: `Delete ${c.name} at ${iv.age}?`, sub: `This removes ${plural(answeredCount(iv), 'video')} and the note from this app. Copies saved to Files or Photos stay there.`, ok: 'Delete birthday',
       async onOk() { await deleteInterviewData(iv); S.interviews = S.interviews.filter(x => x.id !== iv.id); await commit(); back(); refresh(); },
     }) },
   ]);
