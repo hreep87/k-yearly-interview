@@ -493,6 +493,7 @@ function birthdayInfo(birth) {
   };
 }
 const IOS = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+const PREFER_SHARE = IOS || /Android/i.test(navigator.userAgent);
 const STANDALONE = window.navigator.standalone === true || window.matchMedia('(display-mode: standalone)').matches;
 
 /* ---------- icons (stroke = currentColor) */
@@ -800,8 +801,13 @@ function pickFiles({ accept = '*/*', capture = null, multiple = false } = {}) {
 /* ---------- sharing (the bridge to iCloud Drive / Photos) */
 function canShareFiles(files) { try { return !!(navigator.canShare && navigator.share && navigator.canShare({ files })); } catch { return false; } }
 async function shareOrDownload(files) {
-  // navigator.share must start before any await to keep the tap's permission
-  if (canShareFiles(files)) { await navigator.share({ files }); return 'shared'; }
+  // navigator.share must start before any await to keep the tap's permission.
+  // Phones use the share sheet. Computers (Chromebook, Mac, PC) just download, since their share
+  // menus often refuse backup files. If a share fails for any reason except Cancel, download instead.
+  if (PREFER_SHARE && canShareFiles(files)) {
+    try { await navigator.share({ files }); return 'shared'; }
+    catch (e) { if (e && e.name === 'AbortError') throw e; }
+  }
   for (const f of files) {
     const a = document.createElement('a');
     a.href = URL.createObjectURL(f); a.download = f.name;
@@ -1660,7 +1666,7 @@ function mountSavePanel(host, iv) {
       S.settings.lastChangeAt = now;
       if (withBackup) S.settings.lastBackupAt = now + 1;
       await DB.put('state', 'main', S);
-      toast(how === 'downloaded' ? 'Downloaded.' : dest === 'files' ? (withBackup ? 'Saved. Check the Files app if you want to be sure.' : 'Videos saved. Save the backup file from Backup and restore too.') : 'Sent to Photos.', 3600);
+      toast(how === 'downloaded' ? 'Downloaded to this device. Move the files into your Drive folder.' : dest === 'files' ? (withBackup ? 'Saved. Check the Files app if you want to be sure.' : 'Videos saved. Save the backup file from Backup and restore too.') : 'Sent to Photos.', 3600);
       await prep(); refresh();
     }).catch(e => {
       if (e && e.name === 'AbortError') return;
@@ -2320,7 +2326,7 @@ const ACT = {
   'save-backup': () => {
     let f = backupFile();
     if (!canShareFiles([f])) { const t = new File([f], f.name, { type: 'text/plain' }); if (canShareFiles([t])) f = t; }
-    shareOrDownload([f]).then(async () => { S.settings.lastBackupAt = Date.now(); await DB.put('state', 'main', S); refresh(); toast('Backup file saved.'); })
+    shareOrDownload([f]).then(async how => { S.settings.lastBackupAt = Date.now(); await DB.put('state', 'main', S); refresh(); toast(how === 'downloaded' ? 'Backup file downloaded. Move it into your Drive folder.' : 'Backup file saved.'); })
       .catch(e => { if (e && e.name !== 'AbortError') messageSheet("The backup file wasn't saved", e.message || 'Try again.'); });
   },
   restore: () => {
